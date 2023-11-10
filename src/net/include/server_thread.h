@@ -139,15 +139,17 @@ class ServerThread : public Thread {
   virtual int conn_num() const = 0;
 
   struct ConnInfo {
-    int fd;
-    std::string ip_port;
-    struct timeval last_interaction;
+    int fd; // 套接字文件描述符
+    std::string ip_port; //  ip和port
+    struct timeval last_interaction; //  最后互动时间，用于超时判断
   };
   virtual std::vector<ConnInfo> conns_info() const = 0;
 
   // Move out from server thread
+  // 移除一个连接
   virtual std::shared_ptr<NetConn> MoveConnOut(int fd) = 0;
   // Move into server thread
+  // 添加一个连接
   virtual void MoveConnIn(std::shared_ptr<NetConn> conn, const NotifyType& type) = 0;
 
   virtual void KillAllConns() = 0;
@@ -163,6 +165,7 @@ class ServerThread : public Thread {
   /*
    * The event handler
    */
+  //  封装一个多路复用模型作为组件
   std::unique_ptr<NetMultiplexer> net_multiplexer_;
 
  private:
@@ -177,6 +180,7 @@ class ServerThread : public Thread {
   virtual void ProcessNotifyEvents(const NetFiredEvent* pfe);
   
 
+  // 将需要的回调函数（与服务器本身相关的函数，比如处理一个连接的超时、关闭）封装在一个handle对象中。
   const ServerHandle* handle_;
   bool own_handle_ = false;
 
@@ -188,10 +192,10 @@ class ServerThread : public Thread {
   /*
    * The tcp server port and address
    */
-  int port_ = -1;
-  std::set<std::string> ips_;
-  std::vector<std::shared_ptr<ServerSocket>> server_sockets_;
-  std::set<int32_t> server_fds_;
+  int port_ = -1; //  port需要外界传入
+  std::set<std::string> ips_; //  一个server可能有多个网卡
+  std::vector<std::shared_ptr<ServerSocket>> server_sockets_; //  套接字结构
+  std::set<int32_t> server_fds_;//  这个server可能监听多个套接字，这里存放该server监听的所有套接字
 
   virtual int InitHandle();
   void* ThreadMain() override;

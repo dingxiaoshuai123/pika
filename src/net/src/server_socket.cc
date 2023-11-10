@@ -42,13 +42,16 @@ int ServerSocket::Listen(const std::string& bind_ip) {
 
   servaddr_.sin_family = AF_INET;
   if (bind_ip.empty()) {
+    // 如果没有传入，那么默认使用本机IP地址
     servaddr_.sin_addr.s_addr = htonl(INADDR_ANY);
   } else {
     servaddr_.sin_addr.s_addr = inet_addr(bind_ip.c_str());
   }
   servaddr_.sin_port = htons(port_);
 
+  //  在产生子进程时不复制该fd
   fcntl(sockfd_, F_SETFD, fcntl(sockfd_, F_GETFD) | FD_CLOEXEC);
+
 
   ret = bind(sockfd_, reinterpret_cast<struct sockaddr*>(&servaddr_), sizeof(servaddr_));
   if (ret < 0) {

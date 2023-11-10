@@ -16,6 +16,8 @@
 
 namespace net {
 
+
+//  套接字的数据封装，提供listen、close等接口
 class ServerSocket : public pstd::noncopyable {
  public:
   explicit ServerSocket(int port, bool is_block = false);

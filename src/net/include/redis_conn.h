@@ -27,6 +27,7 @@ class RedisConn : public NetConn {
             const HandleType& handle_type = kSynchronous, int rbuf_max_len = REDIS_MAX_MESSAGE);
   ~RedisConn() override;
 
+  //  一个连接可以不断的进行输入，只要有明确的分隔符就可以分理出每一个完整的命令
   ReadStatus GetRequest() override;
   WriteStatus SendReply() override;
   int WriteResp(const std::string& resp) override;
@@ -46,11 +47,17 @@ class RedisConn : public NetConn {
   static int ParserCompleteCb(RedisParser* parser, const std::vector<RedisCmdArgsType>& argvs);
   ReadStatus ParseRedisParserStatus(RedisParserStatus status);
 
+  //  默认为异步执行
   HandleType handle_type_ = kSynchronous;
 
+  //  连接中只处理字节流，不会区分独立的命令等等，在redis解析器中，会将字节流解析成一个个独立的命令
+  //  保存读到数据的缓存区域首地址
   char* rbuf_ = nullptr;
+  //  缓存区域的长度
   int rbuf_len_ = 0;
+  //  缓存区域的最大长度
   int rbuf_max_len_ = 0;
+
   int msg_peak_ = 0;
   int command_len_ = 0;
 
@@ -58,8 +65,11 @@ class RedisConn : public NetConn {
   std::string response_;
 
   // For Redis Protocol parser
+  //  记录已经读取的位置
   int last_read_pos_ = -1;
+  //  一个用来解析redis协议的类
   RedisParser redis_parser_;
+  //  bulk的长度
   long bulk_len_ = -1;
 };
 

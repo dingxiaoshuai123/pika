@@ -312,13 +312,16 @@ void ClientThread::ProcessNotifyEvents(const NetFiredEvent* pfe) {
         NetItem ti = net_multiplexer_->NotifyQueuePop();
         std::string ip_port = ti.ip_port();
         int fd = ti.fd();
+        //  如果是写任务。那么需要确定是否已经建立了连接，如果没有建立，那么先建立连接
         if (ti.notify_type() == kNotiWrite) {
           if (ipport_conns_.find(ip_port) == ipport_conns_.end()) {
+            //  还没有建立连接
             std::string ip;
             int port = 0;
             if (!pstd::ParseIpPortString(ip_port, ip, port)) {
               continue;
             }
+            //  开始建立连接,并注册读写事件
             Status s = ScheduleConnect(ip, port);
             if (!s.ok()) {
               std::string ip_port = ip + ":" + std::to_string(port);
@@ -342,6 +345,7 @@ void ClientThread::ProcessNotifyEvents(const NetFiredEvent* pfe) {
           // get msg from to_send_
           std::vector<std::string> send_failed_msgs;
           for (auto& msg : msgs) {
+            //  将要发送的数据放入writebuf.queue中，并设置is_reply为true，等待发送
             if (ipport_conns_[ip_port]->WriteResp(msg)) {
               send_failed_msgs.push_back(msg);
             }
@@ -383,6 +387,7 @@ void* ClientThread::ThreadMain() {
 
   std::string ip_port;
 
+  //  由于是客户端线程，所以需要主动建立
   while (!should_stop()) {
     if (cron_interval_ > 0) {
       gettimeofday(&now, nullptr);
@@ -433,6 +438,7 @@ void* ClientThread::ThreadMain() {
 
       if ((should_close == 0) && (pfe->mask & kWritable) && conn->is_reply()) {
         WriteStatus write_status = conn->SendReply();
+        //  发送之后更新时间
         conn->set_last_interaction(now);
         if (write_status == kWriteAll) {
           net_multiplexer_->NetModEvent(pfe->fd, 0, kReadable);

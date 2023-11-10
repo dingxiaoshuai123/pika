@@ -13,6 +13,8 @@
 #include "include/pika_command.h"
 #include "include/pika_slot.h"
 
+
+//  代表一个db
 class DB : public std::enable_shared_from_this<DB>, public pstd::noncopyable {
  public:
   DB(std::string  db_name, uint32_t slot_num, const std::string& db_path, const std::string& log_path);
@@ -61,9 +63,13 @@ class DB : public std::enable_shared_from_this<DB>, public pstd::noncopyable {
     return slots_;
   }
  private:
+  //  dbname
   std::string db_name_;
+  //  该db中的slot数量
   uint32_t slot_num_ = 0;
+  //  db的path
   std::string db_path_;
+  //  该db的log path
   std::string log_path_;
 
   std::atomic<bool> binlog_io_error_;
@@ -71,6 +77,7 @@ class DB : public std::enable_shared_from_this<DB>, public pstd::noncopyable {
   // slots_rw_ > key_scan_protector_
 
   std::shared_mutex slots_rw_;
+  //  一个DB中的映射，通过lotid 映射 指向slot的指针
   std::map<uint32_t, std::shared_ptr<Slot>> slots_;
 
   /*

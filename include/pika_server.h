@@ -537,6 +537,7 @@ class PikaServer : public pstd::noncopyable {
    */
   std::atomic<SlotState> slot_state_;
   std::shared_mutex dbs_rw_;
+  //  一个pika Server中有多个db。string = DB0，后面的指针指向所指的db
   std::map<std::string, std::shared_ptr<DB>> dbs_;
 
   /*

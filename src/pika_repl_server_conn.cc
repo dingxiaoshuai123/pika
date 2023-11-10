@@ -23,6 +23,7 @@ PikaReplServerConn::~PikaReplServerConn() = default;
 void PikaReplServerConn::HandleMetaSyncRequest(void* arg) {
   std::unique_ptr<ReplServerTaskArg> task_arg(static_cast<ReplServerTaskArg*>(arg));
   const std::shared_ptr<InnerMessage::InnerRequest> req = task_arg->req;
+  //  这个conn就是自己，所以最后的发送动作也是由PikaReplServerConn发送
   std::shared_ptr<net::PbConn> conn = task_arg->conn;
 
   InnerMessage::InnerRequest::MetaSync meta_sync_request = req->meta_sync();
@@ -31,19 +32,25 @@ void PikaReplServerConn::HandleMetaSyncRequest(void* arg) {
 
   InnerMessage::InnerResponse response;
   response.set_type(InnerMessage::kMetaSync);
+  //  从本地pika的g_pika_conf拿出密码和远端发送的从pika的masterauth进行对比
   if (!g_pika_conf->requirepass().empty() && g_pika_conf->requirepass() != masterauth) {
+    //  如果出错，那么返回无效密码错误的响应包
     response.set_code(InnerMessage::kError);
     response.set_reply("Auth with master error, Invalid masterauth");
   } else {
     LOG(INFO) << "Receive MetaSync, Slave ip: " << node.ip() << ", Slave port:" << node.port();
+    //  每一个dbstruct 包含dbname、slotnum、slotids
     std::vector<DBStruct> db_structs = g_pika_conf->db_structs();
+    // 尝试在本地的Pika中加入从Pika的信息，IP + Port + connFd(自己conn的fd) + dbStruct（自己的dbstruct）
     bool success = g_pika_server->TryAddSlave(node.ip(), node.port(), conn->fd(), db_structs);
     const std::string ip_port = pstd::IpPortString(node.ip(), node.port());
+    // 在replication manager中更新该连接的信息,更新的是repl_server_thread中的信息
     g_pika_rm->ReplServerUpdateClientConnMap(ip_port, conn->fd());
     if (!success) {
       response.set_code(InnerMessage::kOther);
       response.set_reply("Slave AlreadyExist");
     } else {
+      // 当从slaveItem成功加入pikaServer，那么本Pika成为Master(单纯的更改自己的role信息)
       g_pika_server->BecomeMaster();
       response.set_code(InnerMessage::kOk);
       InnerMessage::InnerResponse_MetaSync* meta_sync = response.mutable_meta_sync();
@@ -62,6 +69,9 @@ void PikaReplServerConn::HandleMetaSyncRequest(void* arg) {
       }
     }
   }
+
+  //  当成功在PikaServer中加入了一个Pika的SlaveItem信息，并且在rm中的server_thread中更新了对应写入的fd信息。
+  //  首先更改自己的role信息为master，然后向远端发送元信息replicationid、runid、classical、dbstruct。
 
   std::string reply_str;
   if (!response.SerializeToString(&reply_str) || (conn->WriteResp(reply_str) != 0)) {
@@ -304,6 +314,7 @@ void PikaReplServerConn::HandleDBSyncRequest(void* arg) {
 
   LOG(INFO) << "Handle Slot DBSync Request";
   bool prior_success = true;
+  //  首先获得MasterSlot
   std::shared_ptr<SyncMasterSlot> master_slot =
       g_pika_rm->GetSyncMasterSlotByName(SlotInfo(db_name, slot_id));
   if (!master_slot) {
@@ -311,7 +322,10 @@ void PikaReplServerConn::HandleDBSyncRequest(void* arg) {
     prior_success = false;
   }
   if (prior_success) {
+    //  要检查MasterSlot中是否有保存slaveSlot信息，如果没有则添加进去
+    //  协调者的代码之后要重点看
     if (!master_slot->CheckSlaveNodeExist(node.ip(), node.port())) {
+      //  产生一个Session，标识这次会话
       int32_t session_id = master_slot->GenSessionId();
       if (session_id == -1) {
         response.set_code(InnerMessage::kError);
@@ -320,6 +334,7 @@ void PikaReplServerConn::HandleDBSyncRequest(void* arg) {
       }
       if (prior_success) {
         db_sync_response->set_session_id(session_id);
+        //  添加到协调者中
         Status s = master_slot->AddSlaveNode(node.ip(), node.port(), session_id);
         if (s.ok()) {
           const std::string ip_port = pstd::IpPortString(node.ip(), node.port());
@@ -334,7 +349,9 @@ void PikaReplServerConn::HandleDBSyncRequest(void* arg) {
         db_sync_response->set_session_id(-1);
       }
     } else {
+      //  可以在协调者中找到从Slot的信息
       int32_t session_id;
+      //  拿到已有的session
       Status s = master_slot->GetSlaveNodeSession(node.ip(), node.port(), &session_id);
       if (!s.ok()) {
         response.set_code(InnerMessage::kError);
@@ -348,6 +365,7 @@ void PikaReplServerConn::HandleDBSyncRequest(void* arg) {
     }
   }
 
+  //  调用server的TryDbSync，推测从节点的MasterSlot中的offset应该是从主节点同步到的binlogOffset
   g_pika_server->TryDBSync(node.ip(), node.port() + kPortShiftRSync, db_name, slot_id,
                            static_cast<int32_t>(slave_boffset.filenum()));
   // Change slave node's state to kSlaveDbSync so that the binlog will perserved.
@@ -507,9 +525,11 @@ int PikaReplServerConn::DealMessage() {
     return -1;
   }
   switch (req->type()) {
+      //  第一次收到请求：从节点请求元数据，故类型为kMetaSync
     case InnerMessage::kMetaSync: {
       auto task_arg =
           new ReplServerTaskArg(req, std::dynamic_pointer_cast<PikaReplServerConn>(shared_from_this()));
+      //  使用pika_rm的线程池去异步的处理
       g_pika_rm->ScheduleReplServerBGTask(&PikaReplServerConn::HandleMetaSyncRequest, task_arg);
       break;
     }
@@ -519,6 +539,7 @@ int PikaReplServerConn::DealMessage() {
       g_pika_rm->ScheduleReplServerBGTask(&PikaReplServerConn::HandleTrySyncRequest, task_arg);
       break;
     }
+    //  第二次收到DSync，请求进行全量同步
     case InnerMessage::kDBSync: {
       auto task_arg =
           new ReplServerTaskArg(req, std::dynamic_pointer_cast<PikaReplServerConn>(shared_from_this()));

@@ -33,10 +33,14 @@ struct KeyScanInfo {
 };
 
 struct BgSaveInfo {
+  //  是否正在bgsave
   bool bgsaving = false;
+  //  bgsave开始时间
   time_t start_time = 0;
   std::string s_start_time;
+  //  存储地址
   std::string path;
+  //  offset
   LogOffset offset;
   BgSaveInfo() = default;
   void Clear() {
@@ -93,24 +97,33 @@ class Slot : public std::enable_shared_from_this<Slot>,public pstd::noncopyable 
   void GetSlotsMgrtSenderStatus(std::string *ip, int64_t *port, int64_t *slot, bool *migrating, int64_t *moved, int64_t *remained);
 
  private:
+  //  slot基本标识
   std::string db_name_;
   uint32_t slot_id_ = 0;
+  //  一个快照id
   std::string snapshot_uuid_;
 
+  //  db的地址
   std::string db_path_;
+  //  dump子地址
   std::string bgsave_sub_path_;
+  //  保存全量同步数据子地址
   std::string dbsync_path_;
+  //  slotname
   std::string slot_name_;
 
+  //  是否打开
   bool opened_ = false;
 
   std::shared_mutex db_rwlock_;
   // class may be shared, using shared_ptr would be a better choice
   std::shared_ptr<pstd::lock::LockMgr> lock_mgr_;
+  //  最重要的是，其代表的是真正的db，其他的只是特定场合记录的一个状态
   std::shared_ptr<storage::Storage> db_;
 
   bool full_sync_ = false;
 
+  //  保护keyinfo命令
   pstd::Mutex key_info_protector_;
   KeyScanInfo key_scan_info_;
 

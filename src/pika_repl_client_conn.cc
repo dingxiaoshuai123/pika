@@ -52,6 +52,7 @@ int PikaReplClientConn::DealMessage() {
     case InnerMessage::kMetaSync: {
       auto task_arg =
           new ReplClientTaskArg(response, std::dynamic_pointer_cast<PikaReplClientConn>(shared_from_this()));
+      //  调用的是rm中repl_client_thread中的wokerThread
       g_pika_rm->ScheduleReplClientBGTask(&PikaReplClientConn::HandleMetaSyncResponse, static_cast<void*>(task_arg));
       break;
     }
@@ -106,12 +107,13 @@ void PikaReplClientConn::HandleMetaSyncResponse(void* arg) {
 
   const InnerMessage::InnerResponse_MetaSync meta_sync = response->meta_sync();
 
+  //  拿出从主节点传来的dbstruct信息（元信息之一）
   std::vector<DBStruct> master_db_structs;
   for (int idx = 0; idx < meta_sync.dbs_info_size(); ++idx) {
     const InnerMessage::InnerResponse_MetaSync_DBInfo& db_info = meta_sync.dbs_info(idx);
     master_db_structs.push_back({db_info.db_name(), static_cast<uint32_t>(db_info.slot_num()), {0}});
   }
-
+  //  与自己的做比较
   std::vector<DBStruct> self_db_structs = g_pika_conf->db_structs();
   if (!PikaReplClientConn::IsDBStructConsistent(self_db_structs, master_db_structs)) {
     LOG(WARNING) << "Self db structs(number of databases: " << self_db_structs.size()
@@ -146,6 +148,8 @@ void PikaReplClientConn::HandleMetaSyncResponse(void* arg) {
   }
 
   g_pika_conf->SetWriteBinlog("yes");
+  //  pikaServer激活所有的slot开始同步
+  //  其主要做的事是更新了rm中slave_slot中的信息。但是并没有操作rm中master_slot的信息
   g_pika_server->PrepareSlotTrySync();
   g_pika_server->FinishMetaSync();
   LOG(INFO) << "Finish to handle meta sync response";

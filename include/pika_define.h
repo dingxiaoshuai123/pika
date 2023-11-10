@@ -51,8 +51,11 @@ struct DBStruct {
     return db_name == db_struct.db_name && slot_num == db_struct.slot_num &&
            slot_ids == db_struct.slot_ids;
   }
+  //  db名称
   std::string db_name;
+  //  slot数量
   uint32_t slot_num = 0;
+  //  slotid
   std::set<uint32_t> slot_ids;
 };
 
@@ -66,6 +69,8 @@ using MonitorCronTask = WorkerCronTask;
 #define TASK_KILLALL 1
 
 // slave item
+// 用于标识一个pikaServer中的从Pika。
+//  Ip + Port + dbStruct + connfd
 struct SlaveItem {
   std::string ip_port;
   std::string ip;
@@ -76,6 +81,8 @@ struct SlaveItem {
   struct timeval create_time;
 };
 
+
+//  slot的状态机：
 enum ReplState {
   kNoConnect = 0,
   kTryConnect = 1,
@@ -97,6 +104,7 @@ enum SlotState {
   INBUSY = 1,
 };
 
+//  一个
 struct LogicOffset {
   uint32_t term{0};
   uint64_t index{0};
@@ -112,6 +120,7 @@ struct LogicOffset {
   std::string ToString() const { return "term: " + std::to_string(term) + " index: " + std::to_string(index); }
 };
 
+//  通过一个filenum和一个offset唯一标识一条binlog
 struct BinlogOffset {
   uint32_t filenum{0};
   uint64_t offset{0};
@@ -143,6 +152,7 @@ struct BinlogOffset {
   }
 };
 
+//  历史遗留问题，将binlog和logiclog混杂在一起，为了实现强一致性的raft
 struct LogOffset {
   LogOffset(const LogOffset& _log_offset) {
     b_offset = _log_offset.b_offset;
@@ -191,6 +201,7 @@ enum BinlogSyncState {
 // debug only
 const std::string BinlogSyncStateMsg[] = {"NotSync", "ReadFromCache", "ReadFromFile"};
 
+//  封装了一个logoffset（用于定位一条binlog）、string（binlog内容）来调用一条binlog
 struct BinlogChip {
   LogOffset offset_;
   std::string binlog_;
@@ -201,6 +212,7 @@ struct BinlogChip {
   }
 };
 
+//  代表一个slot的信息：dbname + slotID
 struct SlotInfo {
   SlotInfo(std::string db_name, uint32_t slot_id)
       : db_name_(std::move(db_name)), slot_id_(slot_id) {}
@@ -220,12 +232,14 @@ struct SlotInfo {
   uint32_t slot_id_{0};
 };
 
+//  根据一个slotInfo hash出一个hashID
 struct hash_slot_info {
   size_t operator()(const SlotInfo& n) const {
     return std::hash<std::string>()(n.db_name_) ^ std::hash<uint32_t>()(n.slot_id_);
   }
 };
 
+//  一个基本的节点封装  IP + Port
 class Node {
  public:
   Node(std::string  ip, int port) : ip_(std::move(ip)), port_(port) {}
@@ -239,7 +253,8 @@ class Node {
   std::string ip_;
   int port_ = 0;
 };
-
+//  继承自Node节点，在原有IP + Port的基础上，增加了SlotInfo信息，代表了一个Slot。
+//  对于一个Slot而言，存在sessionId以及最后一次收发数据的时间
 class RmNode : public Node {
  public:
   RmNode(const std::string& ip, int port, SlotInfo  slot_info)
@@ -285,6 +300,7 @@ class RmNode : public Node {
   int32_t session_id_ = 0;
   uint64_t last_send_time_ = 0;
   uint64_t last_recv_time_ = 0;
+  //  ip + port
 };
 
 struct hash_rm_node {
@@ -294,9 +310,12 @@ struct hash_rm_node {
   }
 };
 
+//  封装了一个写任务，封装了对应的slot信息以及binlogChip(里面有binlog具体内容以及binlog的位置信息)
+//  一个WriteTask代表了一条要写的binlog任务
 struct WriteTask {
   struct RmNode rm_node_;
   struct BinlogChip binlog_chip_;
+  //  同样是历史遗留问题，为了实现raft而留下的
   LogOffset prev_offset_;
   WriteTask(const RmNode& rm_node, const BinlogChip& binlog_chip, const LogOffset& prev_offset)
       : rm_node_(rm_node), binlog_chip_(binlog_chip), prev_offset_(prev_offset) {}
@@ -320,12 +339,15 @@ const int SLAVE_ITEM_STAGE_ONE = 1;
 const int SLAVE_ITEM_STAGE_TWO = 2;
 
 // repl_state_
+//  副本状态:无连接（初始状态）、同步元数据、同步元数据结束、错误
 const int PIKA_REPL_NO_CONNECT = 0;
 const int PIKA_REPL_SHOULD_META_SYNC = 1;
 const int PIKA_REPL_META_SYNC_DONE = 2;
 const int PIKA_REPL_ERROR = 3;
 
 // role
+// 角色有三种，没有主从关系:PIKA_ROLE_SINGLE
+// 主节点:PIKA_ROLE_MASTER   从节点:PIKA_ROLE_SLAVE
 const int PIKA_ROLE_SINGLE = 0;
 const int PIKA_ROLE_SLAVE = 1;
 const int PIKA_ROLE_MASTER = 2;

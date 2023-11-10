@@ -31,6 +31,7 @@
 #define kRecvKeepAliveTimeout (20 * 1000000)
 
 
+//  用于同步时标识一个slot
 class SyncSlot {
  public:
   SyncSlot(const std::string& db_name, uint32_t slot_id);
@@ -41,6 +42,7 @@ class SyncSlot {
   std::string SlotName();
 
  protected:
+  //  父类只代表一个slot信息
   SlotInfo slot_info_;
 };
 
@@ -122,6 +124,8 @@ class SyncMasterSlot : public SyncSlot {
   pstd::Mutex session_mu_;
   int32_t session_id_ = 0;
 
+  //  对于主的slot，有一个coordinator成员，来存储有关主从同步的信息
+  //  同样是历史遗留问题，这应该是raft协议中的协调者
   ConsensusCoordinator coordinator_;
 };
 
@@ -164,10 +168,14 @@ class SyncSlaveSlot : public SyncSlot {
   bool IsRsyncRunning() {return rsync_cli_->IsRunning();}
 
  private:
+  //  一个用于获取db的rsync线程
   std::unique_ptr<rsync::RsyncClient> rsync_cli_;
   pstd::Mutex slot_mu_;
+  //  用于保存远端主slot信息
   RmNode m_info_;
+  //  slot自己的状态机状态
   ReplState repl_state_{kNoConnect};
+  //  本地ip
   std::string local_ip_;
 };
 
@@ -254,14 +262,17 @@ class PikaReplicaManager {
   void InitSlot();
   pstd::Status SelectLocalIp(const std::string& remote_ip, int remote_port, std::string* local_ip);
 
+  //  在主从同步中标识与自己相关的主从节点slot的信息
   std::shared_mutex slots_rw_;
   std::unordered_map<SlotInfo, std::shared_ptr<SyncMasterSlot>, hash_slot_info> sync_master_slots_;
   std::unordered_map<SlotInfo, std::shared_ptr<SyncSlaveSlot>, hash_slot_info> sync_slave_slots_;
 
+  //  用于在主从同步中，保存发送往不同ip+port的数据
   pstd::Mutex write_queue_mu_;
   // every host owns a queue, the key is "ip+port"
   std::unordered_map<std::string, std::unordered_map<uint32_t, std::queue<WriteTask>>> write_queues_;
 
+  //  用于主从同步中的数据交换
   std::unique_ptr<PikaReplClient> pika_repl_client_;
   std::unique_ptr<PikaReplServer> pika_repl_server_;
 };

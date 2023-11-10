@@ -66,20 +66,26 @@ class DispatchThread : public ServerThread {
 
   ~DispatchThread() override;
 
+  //  开启线程的同时，启动EorkerThrad，并且启动一个timeThread（与阻塞命令有关）
   int StartThread() override;
-
+  //  关闭线程的同时，关闭所有的WorkThread，然后关闭WorkerThread的私有空间，最后关闭本线程
   int StopThread() override;
 
+  //  给所有的WorkerThread设置超时时间
   void set_keepalive_timeout(int timeout) override;
 
+  //  会统计所有workerThread中的连接数
   int conn_num() const override;
-
+  //  同理，统计所有WorkerThread中的连接信息
   std::vector<ServerThread::ConnInfo> conns_info() const override;
-
+  //  将某个fd移除，需要遍历所有的WorkerThreads,因为这个fd可能分配给了某一个WorkerThread
   std::shared_ptr<NetConn> MoveConnOut(int fd) override;
 
+  //  在HandleNewConn中，会尝试向一个WorkerThread中放入一个conn，而这个函数会强制向下一个WorkerThread放入一个conn
   void MoveConnIn(std::shared_ptr<NetConn> conn, const NotifyType& type) override;
 
+
+  //  为什么要在dispatch线程中写删除所有连接的接口？
   void KillAllConns() override;
 
   bool KillConn(const std::string& ip_port) override;
