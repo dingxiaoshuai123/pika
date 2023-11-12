@@ -89,6 +89,7 @@ PikaServer::PikaServer()
   pika_migrate_thread_ = std::make_unique<PikaMigrateThread>();
 
   pika_client_processor_ = std::make_unique<PikaClientProcessor>(g_pika_conf->thread_pool_size(), 100000);
+  pika_client_slow_cmd_processor_ = std::make_unique<PikaClientProcessor>(g_pika_conf->thread_pool_size(), 100000);
   instant_ = std::make_unique<Instant>();
   exit_mutex_.lock();
 }
@@ -158,6 +159,12 @@ void PikaServer::Start() {
   if (ret != net::kSuccess) {
     dbs_.clear();
     LOG(FATAL) << "Start PikaClientProcessor Error: " << ret
+               << (ret == net::kCreateThreadError ? ": create thread error " : ": other error");
+  }
+  ret = pika_client_slow_cmd_processor_->Start();
+  if (ret != net::kSuccess) {
+    dbs_.clear();
+    LOG(FATAL) << "Start PikaClientSlowCmdProcessor Error: " << ret
                << (ret == net::kCreateThreadError ? ": create thread error " : ": other error");
   }
   ret = pika_dispatch_thread_->StartThread();
@@ -843,7 +850,13 @@ void PikaServer::SetFirstMetaSync(bool v) {
   first_meta_sync_ = v;
 }
 
-void PikaServer::ScheduleClientPool(net::TaskFunc func, void* arg) { pika_client_processor_->SchedulePool(func, arg); }
+void PikaServer::ScheduleClientPool(net::TaskFunc func, void* arg) {
+  if(static_cast<PikaClientConn::BgTaskArg*>(arg)->is_slow_cmd) {
+    pika_client_slow_cmd_processor_->SchedulePool(func, arg);
+    return;
+  }
+  pika_client_processor_->SchedulePool(func, arg);
+}
 
 void PikaServer::ScheduleClientBgThreads(net::TaskFunc func, void* arg, const std::string& hash_str) {
   pika_client_processor_->ScheduleBgThreads(func, arg, hash_str);

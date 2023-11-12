@@ -157,12 +157,37 @@ void PikaClientConn::ProcessMonitor(const PikaCmdArgsType& argv) {
 void PikaClientConn::ProcessRedisCmds(const std::vector<net::RedisCmdArgsType>& argvs, bool async,
                                       std::string* response) {
   time_stat_->Reset();
+
+  //  分离之后
   if (async) {
-    auto arg = new BgTaskArg();
-    arg->redis_cmds = argvs;
+    //  在这里将快慢命令分离出来
+    //  遍历整个命令vector，根据命令名称进行分离
+    std::vector<net::RedisCmdArgsType> slow;
+    std::vector<net::RedisCmdArgsType> fast;
+    for (auto const argv : argvs) {
+      auto name = argv.at(0);
+      std::transform(name.begin(), name.end(), name.begin(), [](const char c) {
+        return std::tolower(c);
+      });
+      if (auto is_find = slow_cmd_set.find(name); is_find != slow_cmd_set.end()) {
+        slow.push_back(std::move(argv));
+        continue;
+      }
+      fast.push_back(std::move(argv));
+    }
+    auto arg_fast = new BgTaskArg();
+    arg_fast->redis_cmds = fast;
+    arg_fast->is_slow_cmd = false;
     time_stat_->enqueue_ts_ = pstd::NowMicros();
-    arg->conn_ptr = std::dynamic_pointer_cast<PikaClientConn>(shared_from_this());
-    g_pika_server->ScheduleClientPool(&DoBackgroundTask, arg);
+    arg_fast->conn_ptr = std::dynamic_pointer_cast<PikaClientConn>(shared_from_this());
+    g_pika_server->ScheduleClientPool(&DoBackgroundTask, arg_fast);
+
+    auto arg_slow = new BgTaskArg();
+    arg_slow->redis_cmds = slow;
+    arg_slow->is_slow_cmd = true;
+    time_stat_->enqueue_ts_ = pstd::NowMicros();
+    arg_slow->conn_ptr = std::dynamic_pointer_cast<PikaClientConn>(shared_from_this());
+    g_pika_server->ScheduleClientPool(&DoBackgroundTask, arg_slow);
     return;
   }
   BatchExecRedisCmd(argvs);

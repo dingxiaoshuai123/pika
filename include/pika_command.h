@@ -223,6 +223,12 @@ const std::string kClusterPrefix = "pkcluster";
 using PikaCmdArgsType = net::RedisCmdArgsType;
 static const int RAW_ARGS_LEN = 1024 * 1024;
 
+const std::set<std::string> slow_cmd_set {
+    kCmdNameInfo,
+    kCmdNameMset,
+    kCmdNameMget
+};
+
 enum CmdFlagsMask {
   kCmdFlagsMaskRW = 1,
   kCmdFlagsMaskType = 30,

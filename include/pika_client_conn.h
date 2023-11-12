@@ -52,6 +52,7 @@ class PikaClientConn : public net::RedisConn {
     LogOffset offset;
     std::string db_name;
     uint32_t slot_id;
+    bool is_slow_cmd;
   };
 
   // Auth related
