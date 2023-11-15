@@ -25,8 +25,11 @@ std::shared_ptr<Cmd> PikaCmdTableManager::GetCmd(const std::string& opt) {
 }
 
 std::shared_ptr<Cmd> PikaCmdTableManager::NewCommand(const std::string& opt) {
+  //   cmd是一个指向命令对象的指针.
   Cmd* cmd = GetCmdFromDB(opt, *cmds_);
   if (cmd) {
+    //  调用具体命令的clone函数。比如GetCmd
+    //  最后调用相关命令的拷贝构造函数，new出一个新的GetCmd，并以shared_ptr管理
     return std::shared_ptr<Cmd>(cmd->Clone());
   }
   return nullptr;

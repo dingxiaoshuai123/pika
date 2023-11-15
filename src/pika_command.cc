@@ -28,6 +28,10 @@ extern PikaServer* g_pika_server;
 extern std::unique_ptr<PikaReplicaManager> g_pika_rm;
 extern std::unique_ptr<PikaCmdTableManager> g_pika_cmd_table_manager;
 
+/**
+ * @param cmd_table 指向一个Map，映射关系为命令名称和指向命令对象的uniqu_ptr
+ * 初始化好所有的对象，并使用unique_ptr管理
+ */
 void InitCmdTable(CmdTable* cmd_table) {
   // Admin
   ////Slaveof
@@ -690,11 +694,17 @@ void InitCmdTable(CmdTable* cmd_table) {
 Cmd* GetCmdFromDB(const std::string& opt, const CmdTable& cmd_table) {
   auto it = cmd_table.find(opt);
   if (it != cmd_table.end()) {
+    //  返回了存储在CmdTable中的命令对象的原生指针指针
     return it->second.get();
   }
   return nullptr;
 }
 
+/**
+ * @param argv 命令组成的vector,比如{"set","key", "value"}
+ * @param db_name 要操作的db的名称，默认为db0
+ * 初始化一个命令对象。同时调用DoInitial。
+ */
 void Cmd::Initial(const PikaCmdArgsType& argv, const std::string& db_name) {
   argv_ = argv;
   db_name_ = db_name;
@@ -710,6 +720,7 @@ std::vector<std::string> Cmd::current_key() const {
 }
 
 void Cmd::Execute() {
+  //  name_也是在插入table的时候就初始化好的
   if (name_ == kCmdNameFlushdb) {
     ProcessFlushDBCmd();
   } else if (name_ == kCmdNameFlushall) {
@@ -717,21 +728,28 @@ void Cmd::Execute() {
   } else if (name_ == kCmdNameInfo || name_ == kCmdNameConfig) {
     ProcessDoNotSpecifySlotCmd();
   } else {
+    //  普通命令都走这里
     ProcessSingleSlotCmd();
   }
 }
 
 void Cmd::ProcessFlushDBCmd() {
+  //  在命令穿入参数的时候应该会接受一个dbname，默认为db0，所以flushdb默认会flush db0，否额flush其他db
   std::shared_ptr<DB> db = g_pika_server->GetDB(db_name_);
   if (!db) {
+    //  确保能拿到db
     res_.SetRes(CmdRes::kInvalidDB);
   } else {
+    //  确保要flushdb时，没有正在进行keyscaning
     if (db->IsKeyScaning()) {
       res_.SetRes(CmdRes::kErrOther, "The keyscan operation is executing, Try again later");
     } else {
+      //  相应的db需要上锁
       std::lock_guard l_prw(db->slots_rw_);
+      //  这把锁应该与主从有关
       std::lock_guard s_prw(g_pika_rm->slots_rw_);
       for (const auto& slot_item : db->slots_) {
+        // 遍历该db下所有的slot
         std::shared_ptr<Slot> slot = slot_item.second;
         SlotInfo p_info(slot->GetDBName(), slot->GetSlotID());
         if (g_pika_rm->sync_master_slots_.find(p_info) == g_pika_rm->sync_master_slots_.end()) {
@@ -790,7 +808,10 @@ void Cmd::ProcessSingleSlotCmd() {
 
 void Cmd::ProcessCommand(const std::shared_ptr<Slot>& slot, const std::shared_ptr<SyncMasterSlot>& sync_slot,
                          const HintKeys& hint_keys) {
+  //  这个stage_和hint_keys都应该是为了实现raft而残留的
+  //  如果为了实现raft，那么可以在pikaserver中设置一个queue，而里面存放的应该就是命令对象，这个命令对象有自己的stage_
   if (stage_ == kNone) {
+    //  正常情况下都是这个
     InternalProcessCommand(slot, sync_slot, hint_keys);
   } else {
     if (stage_ == kBinlogStage) {
@@ -813,9 +834,11 @@ void Cmd::InternalProcessCommand(const std::shared_ptr<Slot>& slot, const std::s
     start_us = pstd::NowMicros();
   }
   DoCommand(slot, hint_keys);
+  //  此时，每一个命令对象都有一个duration成员，在执行完毕的时候进行更新
   if (g_pika_conf->slowlog_slower_than() >= 0) {
     do_duration_ += pstd::NowMicros() - start_us;
   }
+
 
   DoBinlog(sync_slot);
 
@@ -956,6 +979,7 @@ std::string Cmd::ToBinlog(uint32_t exec_time, uint32_t term_id, uint64_t logic_i
                                              content, {});
 }
 
+//  如果arity为正，那么参数个数要等于arity，比如set命令的arity是1。如果arity是负数，那么表示不超过arity
 bool Cmd::CheckArg(uint64_t num) const { return !((arity_ > 0 && num != arity_) || (arity_ < 0 && num < -arity_)); }
 
 void Cmd::LogCommand() const {

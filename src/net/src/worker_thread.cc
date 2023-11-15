@@ -104,10 +104,12 @@ void* WorkerThread::ThreadMain() {
     nfds = net_multiplexer_->NetPoll(timeout);
 
     for (int i = 0; i < nfds; i++) {
+      //  pfe中包含一个fd和一个mask
       pfe = (net_multiplexer_->FiredEvents()) + i;
       if (!pfe) {
           continue;
       }
+      //  处理其他线程发送的数据，主要是dispatch线程发送的数据
       if (pfe->fd == net_multiplexer_->NotifyReceiveFd()) {
         if ((pfe->mask & kReadable) != 0) {
           auto nread = static_cast<int32_t>(read(net_multiplexer_->NotifyReceiveFd(), bb, 2048));
@@ -143,6 +145,7 @@ void* WorkerThread::ThreadMain() {
               } else if (ti.notify_type() == kNotiEpollin) {
                 net_multiplexer_->NetModEvent(ti.fd(), 0, kReadable);
               } else if (ti.notify_type() == kNotiEpolloutAndEpollin) {
+                //  处理完一批数据之后，就会收到这个事件，然后注册读事件和写事件。
                 net_multiplexer_->NetModEvent(ti.fd(), 0, kReadable | kWritable);
               } else if (ti.notify_type() == kNotiWait) {
                 // do not register events
@@ -167,10 +170,14 @@ void* WorkerThread::ThreadMain() {
           }
         }
 
+        //  如果要做快慢命令分离是，写事件这里不需要动
         if (((pfe->mask & kWritable) != 0) && in_conn->is_reply()) {
+          //  response中是有数据的，并且is_reply是true
+          //  调用redisconn的SendReply，直接发送了
           WriteStatus write_status = in_conn->SendReply();
           in_conn->set_last_interaction(now);
           if (write_status == kWriteAll) {
+            //  已经写完了全部response，只关注可读事件并且将is_reply设置为false
             net_multiplexer_->NetModEvent(pfe->fd, 0, kReadable);
             in_conn->set_is_reply(false);
             if (in_conn->IsClose()) {
@@ -184,8 +191,11 @@ void* WorkerThread::ThreadMain() {
           }
         }
 
+        //  读事件，只需要在执行具体命令的时候，将其单独放在一个队列中等待处理
         if ((should_close == 0) && ((pfe->mask & kReadable) != 0)) {
+          //
           ReadStatus read_status = in_conn->GetRequest();
+          //
           in_conn->set_last_interaction(now);
           if (read_status == kReadAll) {
             net_multiplexer_->NetModEvent(pfe->fd, 0, 0);
@@ -219,8 +229,10 @@ void* WorkerThread::ThreadMain() {
 }
 
 void WorkerThread::DoCronTask() {
+  //  首先获得当前时间
   struct timeval now;
   gettimeofday(&now, nullptr);
+  //  分别代表要关闭的连接和超时的连接
   std::vector<std::shared_ptr<NetConn>> to_close;
   std::vector<std::shared_ptr<NetConn>> to_timeout;
   {
@@ -228,19 +240,26 @@ void WorkerThread::DoCronTask() {
 
     // Check whether close all connection
     std::lock_guard kl(killer_mutex_);
+    //  如果有一个kKillAllConnsTask，那么将这个workerThread下的所有连接全部加入to_close中
     if (deleting_conn_ipport_.count(kKillAllConnsTask) != 0U) {
       for (auto& conn : conns_) {
         to_close.push_back(conn.second);
       }
+      //  清理conns
       conns_.clear();
+      //  清理deleting_conn_ipport_
       deleting_conn_ipport_.clear();
+      //  直接返回即可
       return;
     }
 
+    //  之所以要把判断超时放在是否有杀掉所有conn后面，如果已经要杀掉所有连接，那么也就没有必要判断超时
+    //  现在判断是否要关闭以及是否超时
     auto iter = conns_.begin();
     while (iter != conns_.end()) {
       std::shared_ptr<NetConn> conn = iter->second;
       // Check connection should be closed
+      // 如果deleting_conn_ipport_中有这个ipport，那么将其加入to_close
       if (deleting_conn_ipport_.count(conn->ip_port()) != 0U) {
         to_close.push_back(conn);
         deleting_conn_ipport_.erase(conn->ip_port());
@@ -277,6 +296,8 @@ void WorkerThread::DoCronTask() {
   }
   for (const auto& conn : to_timeout) {
     CloseFd(conn);
+    //  对于超时的连接，处理关闭fd之外，还会调用
+    //  这个FdTimeoutHandle好像继承自ServerHandle，什么也没干
     server_thread_->handle_->FdTimeoutHandle(conn->fd(), conn->ip_port());
   }
 }

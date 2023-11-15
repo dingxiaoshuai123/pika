@@ -9,6 +9,8 @@
 #include "include/pika_rm.h"
 #include "include/pika_server.h"
 
+
+//  Server和ReplicationServer都是一个全局的变量
 extern PikaServer* g_pika_server;
 extern std::unique_ptr<PikaReplicaManager> g_pika_rm;
 
@@ -22,16 +24,20 @@ PikaAuxiliaryThread::~PikaAuxiliaryThread() {
 void* PikaAuxiliaryThread::ThreadMain() {
   while (!should_stop()) {
     if (g_pika_server->ShouldMetaSync()) {
+      //  调用本地副本管理器给其他机器的副本管理器发送请求
       g_pika_rm->SendMetaSyncRequest();
+      //  g_pika_rm->SendMetaSyncRequest();这里对返回结果没有做任何处理
     } else if (g_pika_server->MetaSyncDone()) {
+      //  调用本地副本管理器开始和目标机器进行同步
       g_pika_rm->RunSyncSlaveSlotStateMachine();
     }
-
+  //  主从节点应该都会进行超时时间的检查
     pstd::Status s = g_pika_rm->CheckSyncTimeout(pstd::NowMicros());
     if (!s.ok()) {
       LOG(WARNING) << s.ToString();
     }
 
+    //  这个应该暂时用不到。pika目前并没有主从切换的
     g_pika_server->CheckLeaderProtectedMode();
 
     // TODO(whoiami) timeout

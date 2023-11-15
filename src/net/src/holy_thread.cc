@@ -117,6 +117,7 @@ void HolyThread::HandleConnEvent(NetFiredEvent* pfe) {
     }
   }
 
+  //  holyThreadasync默认为true，也就是说异步的处理
   if (async_) {
     if (pfe->mask & kReadable) {
       ReadStatus read_status = in_conn->GetRequest();

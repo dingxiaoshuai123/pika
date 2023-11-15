@@ -189,6 +189,7 @@ void RedisParser::CacheHalfArgv() {
 
 RedisParserStatus RedisParser::RedisParserInit(RedisParserType type, const RedisParserSettings& settings) {
   if (status_code_ != kRedisParserNone) {
+    //  初始化的时候，解析器的初始状态应该是None
     SetParserStatus(kRedisParserError, kRedisParserInitError);
     return status_code_;
   }
@@ -231,14 +232,20 @@ RedisParserStatus RedisParser::ProcessInlineBuffer() {
   return status_code_;
 }
 
+//  解析字节流可以分为一下部分：一个完整的命令中包含多个完整的参数，而一个完整的参数由一个完整的参数长度和一个完整的参数内容两部分组成
+//  根据参数的值来判断当前的解析在一个字节流中的什么位置，然后将应该有的结果表达出来.这就是协议的作用。
 RedisParserStatus RedisParser::ProcessMultibulkBuffer() {
   int pos = 0;
   if (multibulk_len_ == 0) {
+    //  如果multibulk_len_是0，那么说明刚解析完一个完整的数据或者是第一次开始解析
     /* The client should have been reset */
+    //  找的 \n
     pos = FindNextSeparators();
     if (pos != -1) {
+      //  成功找到\n，按照协议进行解析，首先找到len
       if (GetNextNum(pos, &multibulk_len_) != 0) {
         // Protocol error: invalid multibulk length
+        // 如果找到\n的情况下，没有解析出multibulk_len_，那么说明这数据有问题， 返回kRedisParserProtoError
         SetParserStatus(kRedisParserError, kRedisParserProtoError);
         return status_code_;
       }
@@ -246,15 +253,17 @@ RedisParserStatus RedisParser::ProcessMultibulkBuffer() {
       argv_.clear();
       if (cur_pos_ > length_ - 1) {
         SetParserStatus(kRedisParserHalf);
-        return status_code_;
+        return status_code_;//HALF
       }
     } else {
       SetParserStatus(kRedisParserHalf);
       return status_code_;  // HALF
     }
   }
+  //  开始解析参数
   while (multibulk_len_ != 0) {
     if (bulk_len_ == -1) {
+      //  同样找到\n
       pos = FindNextSeparators();
       if (pos != -1) {
         if (input_buf_[cur_pos_] != '$') {
@@ -262,6 +271,7 @@ RedisParserStatus RedisParser::ProcessMultibulkBuffer() {
           return status_code_;  // PARSE_ERROR
         }
 
+        //  bulk是代表其中一个完整的参数的长度
         if (GetNextNum(pos, &bulk_len_) != 0) {
           // Protocol error: invalid bulk length
           SetParserStatus(kRedisParserError, kRedisParserProtoError);
@@ -274,8 +284,10 @@ RedisParserStatus RedisParser::ProcessMultibulkBuffer() {
         return status_code_;
       }
     }
+    //  已经获得了一个参数的长度bulk_len
     if ((length_ - 1) - cur_pos_ + 1 < bulk_len_ + 2) {
       // Data not enough
+      // 参数内容不完整
       break;
     } else {
       argv_.emplace_back(input_buf_ + cur_pos_, bulk_len_);
@@ -289,6 +301,7 @@ RedisParserStatus RedisParser::ProcessMultibulkBuffer() {
     SetParserStatus(kRedisParserDone);
     return status_code_;  // OK
   } else {
+    //  当参数内容不完整的情况下，也有可能跳出循环
     SetParserStatus(kRedisParserHalf);
     return status_code_;  // HALF
   }
@@ -311,12 +324,16 @@ void RedisParser::PrintCurrentStatus() {
 }
 
 RedisParserStatus RedisParser::ProcessInputBuffer(const char* input_buf, int length, int* parsed_len) {
+  //  解析器的状态只有这三种时正常的，其余的都是有问题的
   if (status_code_ == kRedisParserInitDone || status_code_ == kRedisParserHalf || status_code_ == kRedisParserDone) {
     // TODO(): AZ: avoid copy
     std::string tmp_str(input_buf, length);
+    //  将这次传递进来的命令添加在之前不完整的命令后面
     input_str_ = half_argv_ + tmp_str;
     input_buf_ = input_str_.c_str();
     length_ = static_cast<int32_t>(length + half_argv_.size());
+
+    //  初始化时，pikaClientConn中的解析器的redis_parser_type_就被设置为REDIS_PARSER_REQUEST
     if (redis_parser_type_ == REDIS_PARSER_REQUEST) {
       ProcessRequestBuffer();
     } else if (redis_parser_type_ == REDIS_PARSER_RESPONSE) {
@@ -343,8 +360,11 @@ RedisParserStatus RedisParser::ProcessResponseBuffer() {
 
 RedisParserStatus RedisParser::ProcessRequestBuffer() {
   RedisParserStatus ret;
+  //  length是目前解析器中所有数据长度
   while (cur_pos_ <= length_ - 1) {
     if (redis_type_ == 0) {
+      //  每当处理完一个完整的命令，那么redis_type就被置为0，
+      //  然后根据一个完整命令的第一个字符决定redis_type_的类型
       if (input_buf_[cur_pos_] == '*') {
         redis_type_ = REDIS_REQ_MULTIBULK;
       } else {
@@ -367,7 +387,9 @@ RedisParserStatus RedisParser::ProcessRequestBuffer() {
       return kRedisParserError;
     }
     if (!argv_.empty()) {
+      //  可能同时解析出多条完整的命令
       argvs_.push_back(argv_);
+      //  每解析出一条完整的命令都会调用一次DealMessage
       if (parser_settings_.DealMessage) {
         if (parser_settings_.DealMessage(this, argv_) != 0) {
           SetParserStatus(kRedisParserError, kRedisParserDealError);
@@ -379,6 +401,7 @@ RedisParserStatus RedisParser::ProcessRequestBuffer() {
     // Reset
     ResetCommandStatus();
   }
+  //  当解析出这次可以解析的所有完整命令后，调用Complete函数
   if (parser_settings_.Complete) {
     if (parser_settings_.Complete(this, argvs_) != 0) {
       SetParserStatus(kRedisParserError, kRedisParserCompleteError);
@@ -390,6 +413,7 @@ RedisParserStatus RedisParser::ProcessRequestBuffer() {
   return status_code_;  // OK
 }
 
+//  当解析出一个完整命令后，将相关的参数重新初始化
 void RedisParser::ResetCommandStatus() {
   redis_type_ = 0;
   multibulk_len_ = 0;
@@ -397,6 +421,7 @@ void RedisParser::ResetCommandStatus() {
   half_argv_.clear();
 }
 
+//
 void RedisParser::ResetRedisParser() {
   cur_pos_ = 0;
   input_buf_ = nullptr;

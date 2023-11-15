@@ -51,6 +51,7 @@ DispatchThread::~DispatchThread() = default;
 
 int DispatchThread::StartThread() {
   for (int i = 0; i < work_num_; i++) {
+    //  这里不是太懂
     int ret = handle_->CreateWorkerSpecificData(&(worker_thread_[i]->private_data_));
     if (ret) {
       return ret;
@@ -59,12 +60,15 @@ int DispatchThread::StartThread() {
     if (!thread_name().empty()) {
       worker_thread_[i]->set_thread_name("WorkerThread");
     }
+    //  启动每一个WorkThread
     ret = worker_thread_[i]->StartThread();
     if (ret) {
       return ret;
     }
   }
 
+
+  //  注册定时任务并且启动定时任务线程
   // Adding timer tasks and run timertaskThread
   timerTaskThread_.AddTimerTask(
       "blrpop_blocking_info_scan", 250, true, [this] { this->ScanExpiredBlockedConnsOfBlrpop();});
@@ -165,6 +169,8 @@ void DispatchThread::HandleNewConn(const int connfd, const std::string& ip_port)
     next_thread = (next_thread + 1) % work_num_;
   }
 
+  //  find的返回值表明了，是否将一个NetItem放在了管道中，所以如果放入失败，那么说明这个通信管道满了
+  //  所以打印的这个queue_limit_代表是的这个通信管道的值，没有错。
   if (!find) {
     LOG(INFO) << "all workers are full, queue limit is " << queue_limit_;
     // every worker is full

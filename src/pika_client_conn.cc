@@ -31,40 +31,54 @@ PikaClientConn::PikaClientConn(int fd, const std::string& ip_port, net::Thread* 
   time_stat_.reset(new TimeStat());
 }
 
+//
 std::shared_ptr<Cmd> PikaClientConn::DoCmd(const PikaCmdArgsType& argv, const std::string& opt,
                                            const std::shared_ptr<std::string>& resp_ptr) {
   // Get command info
+  // 调用g_pika_cmd_table_manager的GetCmd接口。
+  // new出一个新的命令对象，并以shared_ptr管理
   std::shared_ptr<Cmd> c_ptr = g_pika_cmd_table_manager->GetCmd(opt);
   if (!c_ptr) {
+    //  如果命令不存在，在g_pika_cmd_table_manager->GetCmd(opt)中没有找到相应的命令，那么就会返回nullptr
+    //  那么构造出一个dummyCmd对象
     std::shared_ptr<Cmd> tmp_ptr = std::make_shared<DummyCmd>(DummyCmd());
+    //  将执行的结果设置为unknown command
+    //  最后直接返回命令对象即可。
     tmp_ptr->res().SetRes(CmdRes::kErrOther, "unknown command \"" + opt + "\"");
     return tmp_ptr;
   }
+  // 为命令对象设置所属的连接回对应的结果指针
   c_ptr->SetConn(shared_from_this());
   c_ptr->SetResp(resp_ptr);
 
   // Check authed
   // AuthCmd will set stat_
+  // 检查该连接是否有权限执行该命令。
   if (!auth_stat_.IsAuthed(c_ptr)) {
     c_ptr->res().SetRes(CmdRes::kErrOther, "NOAUTH Authentication required.");
     return c_ptr;
   }
 
+  //  判断pika自己是否有monitoring客户端。
   bool is_monitoring = g_pika_server->HasMonitorClients();
   if (is_monitoring) {
+    //   如果有，那么调用该函数。在学习monitor命令的时候再学习
     ProcessMonitor(argv);
   }
 
   // Initial
+  // 一个命令在执行前会根据conn所属的db，到到相应的db中去执行操作
   c_ptr->Initial(argv, current_db_);
   if (!c_ptr->res().ok()) {
     return c_ptr;
   }
 
+  //  更新统计的信息，之后学习到的时候再看
   g_pika_server->UpdateQueryNumAndExecCountDB(current_db_, opt, c_ptr->is_write());
 
   // PubSub connection
   // (P)SubscribeCmd will set is_pubsub_
+  //  判断该连接是否是pubsub连接, 如果是的话，会判断是否是可以执行的命令
   if (this->IsPubSub()) {
     if (opt != kCmdNameSubscribe && opt != kCmdNameUnSubscribe && opt != kCmdNamePing && opt != kCmdNamePSubscribe &&
         opt != kCmdNamePUnSubscribe) {
@@ -75,16 +89,20 @@ std::shared_ptr<Cmd> PikaClientConn::DoCmd(const PikaCmdArgsType& argv, const st
   }
 
   // reject all the request before new master sync finished
+  // 如果此时正在进行与leader选举有关的操作，那么拒绝一下切命令。
   if (g_pika_server->leader_protected_mode()) {
     c_ptr->res().SetRes(CmdRes::kErrOther, "Cannot process command before new leader sync finished");
     return c_ptr;
   }
 
+  //  接下来检查相应的db是否存在，
+  //  与pikaServer有关的之后进行学习。
   if (!g_pika_server->IsDBExist(current_db_)) {
     c_ptr->res().SetRes(CmdRes::kErrOther, "DB not found");
     return c_ptr;
   }
-
+  //  一个命令要进行读或者进行写，在插入cmdTable的是否就已经初始化好了。
+  //  有一个flag参数，保存着一个命令的各种属性。
   if (c_ptr->is_write()) {
     if (g_pika_server->IsDBBinlogIoError(current_db_)) {
       c_ptr->res().SetRes(CmdRes::kErrOther, "Writing binlog failed, maybe no space left on device");
@@ -102,16 +120,24 @@ std::shared_ptr<Cmd> PikaClientConn::DoCmd(const PikaCmdArgsType& argv, const st
   }
 
   // Process Command
+  //  之后就与conn无关，每一个cmd都会实现自己对db的各种操作。
   c_ptr->Execute();
+  //  执行完之后，将conn中的time_stat_.process_done_ts_更新
+  //  所以此时的process_done_ts_完全就是为了统计时间，随着这一批命令的执行，其值不断增加，最后的值代表着执行完一批命令的时间
   time_stat_->process_done_ts_ = pstd::NowMicros();
+  //  拿到一个commandstatMap
   auto cmdstat_map = g_pika_server->GetCommandStatMap();
+  //  统计每一个命令的执行次数和总执行时间
   (*cmdstat_map)[opt].cmd_count.fetch_add(1);
   (*cmdstat_map)[opt].cmd_time_consuming.fetch_add(time_stat_->total_time());
 
+  //  此时进行慢日志的处理
   if (g_pika_conf->slowlog_slower_than() >= 0) {
+    //  命令对象自己有一个成员为doduration，会自己记录执行时间，所以通过GetDoDuration可以获取。
     ProcessSlowlog(argv, c_ptr->GetDoDuration());
   }
 
+  //  返回一个包含执行结果的命令对象。
   return c_ptr;
 }
 
@@ -156,21 +182,30 @@ void PikaClientConn::ProcessMonitor(const PikaCmdArgsType& argv) {
 
 void PikaClientConn::ProcessRedisCmds(const std::vector<net::RedisCmdArgsType>& argvs, bool async,
                                       std::string* response) {
+  // 当解析出一批命令，开始正式执行的时候，初始化time_stat
   time_stat_->Reset();
   if (async) {
+    //  默认为异步的执行
     auto arg = new BgTaskArg();
     arg->redis_cmds = argvs;
+    //  记录一个入队时间，这个入队时间是进入线程池生产者消费者队列的时间
     time_stat_->enqueue_ts_ = pstd::NowMicros();
+    //  在对象内部拿到this的智能指针
     arg->conn_ptr = std::dynamic_pointer_cast<PikaClientConn>(shared_from_this());
+
+    //  将要执行的函数和相应的参数传递给ScheduleClientPool，放入线程池中
+    //g_pikaserver是全局变量，而线程池也是属于这个g_pika_server，而不是属于WorkerThread
     g_pika_server->ScheduleClientPool(&DoBackgroundTask, arg);
     return;
   }
+  //  否则就同步执行BatchExecRedisCmd，在异步的执行方式中，也是调用了BatchExecRedisCmd来批量处理
   BatchExecRedisCmd(argvs);
 }
 
 void PikaClientConn::DoBackgroundTask(void* arg) {
   std::unique_ptr<BgTaskArg> bg_arg(static_cast<BgTaskArg*>(arg));
   std::shared_ptr<PikaClientConn> conn_ptr = bg_arg->conn_ptr;
+  //  在线程池开始执行该函数的时候，记录一下时间为出队时间
   conn_ptr->time_stat_->dequeue_ts_ = pstd::NowMicros();
   if (bg_arg->redis_cmds.empty()) {
     conn_ptr->NotifyEpoll(false);
@@ -221,20 +256,29 @@ void PikaClientConn::DoExecTask(void* arg) {
 }
 
 void PikaClientConn::BatchExecRedisCmd(const std::vector<net::RedisCmdArgsType>& argvs) {
+  // 这一批命令中都是来自同一个连接的命令，且在一批命令中是按照顺序执行的
+  // 如果进行了快慢命令分离，那么不再是按照顺序进行，共用一个resp_num的话，会出现并发问题
   resp_num.store(static_cast<int32_t>(argvs.size()));
   for (const auto& argv : argvs) {
     std::shared_ptr<std::string> resp_ptr = std::make_shared<std::string>();
+    //  同理，需要给慢命令也整一个保存结果的数组
     resp_array.push_back(resp_ptr);
+    //  执行命令，并且将结果保存在resp_array中
     ExecRedisCmd(argv, resp_ptr);
   }
+  //  这个执行时间是执行完一批命令的时间
   time_stat_->process_done_ts_ = pstd::NowMicros();
+  //  现在这一批命令的返回结果都在resp_数组里。
   TryWriteResp();
 }
 
 void PikaClientConn::TryWriteResp() {
   int expected = 0;
+  //  如果resp_num的值是0。那么代表没有需要写回的东西，将其置为-1并返回true
+  //  如果resp_num的值不是0，那么返回false；
   if (resp_num.compare_exchange_strong(expected, -1)) {
     for (auto& resp : resp_array) {
+      //  写入每一个resp
       WriteResp(*resp);
     }
     if (write_completed_cb_) {
@@ -249,7 +293,8 @@ void PikaClientConn::TryWriteResp() {
 void PikaClientConn::ExecRedisCmd(const PikaCmdArgsType& argv, const std::shared_ptr<std::string>& resp_ptr) {
   // get opt
   std::string opt = argv[0];
-  pstd::StringToLower(opt);
+  pstd::StringToLower(opt);//  使用该方法可以变为小写
+  //  一个单独的命令 kclusterPrefix
   if (opt == kClusterPrefix) {
     if (argv.size() >= 2) {
       opt += argv[1];
@@ -257,7 +302,9 @@ void PikaClientConn::ExecRedisCmd(const PikaCmdArgsType& argv, const std::shared
     }
   }
 
+  //  执行DoCmd对象，传入命令的参数、命令的名字、以及保存执行结果的地方
   std::shared_ptr<Cmd> cmd_ptr = DoCmd(argv, opt, resp_ptr);
+  //  在执行的时候，结果是保存在cmd对象中的，最后移动到resp_ptr中
   *resp_ptr = std::move(cmd_ptr->res().message());
   resp_num--;
 }
@@ -274,6 +321,7 @@ void PikaClientConn::AuthStat::Init() {
 // Check permission for current command
 bool PikaClientConn::AuthStat::IsAuthed(const std::shared_ptr<Cmd>& cmd_ptr) {
   std::string opt = cmd_ptr->name();
+  //  如果执行的是Auth命令，那么不需要验证身份，直接返回验证成功
   if (opt == kCmdNameAuth) {
     return true;
   }

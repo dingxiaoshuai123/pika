@@ -39,13 +39,16 @@ class WorkerThread : public Thread {
 
   std::vector<ServerThread::ConnInfo> conns_info() const;
 
+  //  仅仅只是moveout，并没有关闭fd等等其他操作
   std::shared_ptr<NetConn> MoveConnOut(int fd);
 
+  //  外部接口，内部调用了MoveConnIn(const NetItem& it, bool force)
   bool MoveConnIn(const std::shared_ptr<NetConn>& conn, const NotifyType& notify_type, bool force);
 
   bool MoveConnIn(const NetItem& it, bool force);
 
   NetMultiplexer* net_multiplexer() { return net_multiplexer_.get(); }
+  //  这里的删除方式是:传入一个ipport值，然后寻找，如果能找到，将string加入一个vector，或者传入all，最后在定时函数中统一进行删除
   bool TryKillConn(const std::string& ip_port);
 
   mutable pstd::RWMutex rwlock_; /* For external statistics */
@@ -54,8 +57,11 @@ class WorkerThread : public Thread {
   void* private_data_ = nullptr;
 
  private:
+  //  所属的dispatch线程
   ServerThread* server_thread_ = nullptr;
+  //  生产PikaClientConn类的工厂函数
   ConnFactory* conn_factory_ = nullptr;
+  //  定时任务间隔时间
   int cron_interval_ = 0;
 
   /*
@@ -66,9 +72,11 @@ class WorkerThread : public Thread {
   std::atomic<int> keepalive_timeout_;  // keepalive second
 
   void* ThreadMain() override;
+  //  在定时任务中我猜测处理流程如下:检查所有的连接看是否超时，如果超时尝试删除。最后检查删除数组。删除所有无效连接
   void DoCronTask();
 
   pstd::Mutex killer_mutex_;
+  //  需要删除的连接的ip_port
   std::set<std::string> deleting_conn_ipport_;
 
   // clean conns

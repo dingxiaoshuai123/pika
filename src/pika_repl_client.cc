@@ -106,11 +106,13 @@ Status PikaReplClient::SendMetaSync() {
     local_ip = tmp_local_ip;
     cli->Close();
   } else {
+    //  如果连接失败了，那么由于状态机状态一直是PIKA_REPL_SHOULD_META_SYNC，所以会一直发送请求包
     LOG(WARNING) << "Failed to connect master, Master (" << g_pika_server->master_ip() << ":"
                  << g_pika_server->master_port() << "), try reconnect";
     // Sleep three seconds to avoid frequent try Meta Sync
     // when the connection fails
     sleep(3);
+    //  如果Conn失败，那么重置状态，然后等待Auxiliary线程下次再发送请求。
     g_pika_server->ResetMetaSyncStatus();
     return Status::Corruption("Connect master error");
   }
@@ -119,6 +121,7 @@ Status PikaReplClient::SendMetaSync() {
   request.set_type(InnerMessage::kMetaSync);
   InnerMessage::InnerRequest::MetaSync* meta_sync = request.mutable_meta_sync();
   InnerMessage::Node* node = meta_sync->mutable_node();
+  //  设置自己节点ip+port
   node->set_ip(local_ip);
   node->set_port(g_pika_server->port());
 
@@ -136,6 +139,8 @@ Status PikaReplClient::SendMetaSync() {
   }
 
   LOG(INFO) << "Try Send Meta Sync Request to Master (" << master_ip << ":" << master_port << ")";
+  //  向通过命令获取ip + port（with shift）发送请求包
+  //  已经变成了pikareplication之间的数据通信
   return client_thread_->Write(master_ip, master_port + kPortShiftReplServer, to_send);
 }
 

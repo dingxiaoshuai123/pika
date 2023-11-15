@@ -92,6 +92,8 @@ static AuthResult AuthenticateUser(const std::string& pwd, const std::shared_ptr
  * slaveof ip port
  * slaveof ip port force
  */
+
+
 void SlaveofCmd::DoInitial() {
   if (!CheckArg(argv_.size())) {
     res_.SetRes(CmdRes::kWrongNum, kCmdNameSlaveof);
@@ -108,11 +110,14 @@ void SlaveofCmd::DoInitial() {
     return;
   }
 
+  //不允许自己是主的情况下，slaveof其他的节点
   // self is master of A , want to slaveof B
   if ((g_pika_server->role() & PIKA_ROLE_MASTER) != 0) {
     res_.SetRes(CmdRes::kErrOther, "already master of others, invalid usage");
     return;
   }
+
+  // 自己是从节点的情况下收到该命令应该怎么办？
 
   master_ip_ = argv_[1];
   std::string str_master_port = argv_[2];
@@ -121,11 +126,13 @@ void SlaveofCmd::DoInitial() {
     return;
   }
 
+  //  防止自己slave of 自己
   if ((master_ip_ == "127.0.0.1" || master_ip_ == g_pika_server->host()) && master_port_ == g_pika_server->port()) {
     res_.SetRes(CmdRes::kErrOther, "The master ip:port and the slave ip:port are the same");
     return;
   }
 
+  //  如果是force则强制进行全量同步
   if (argv_.size() == 4) {
     if (strcasecmp(argv_[3].data(), "force") == 0) {
       g_pika_server->SetForceFullSync(true);
@@ -137,14 +144,24 @@ void SlaveofCmd::DoInitial() {
 
 void SlaveofCmd::Do(std::shared_ptr<Slot> slot) {
   // Check if we are already connected to the specified master
+  //  对比要进行连接的地址和已经连接的地址是否是同一个地址。
+  //  通过这里可以推理出:pika是允许自己是从的情况下slaveof 其他的节点
+
+  //  master_ip_是要进行连接的节点的ip地址 g_pika_server->master_ip()是已经连接的节点的ip地址
+  //  port同理
   if ((master_ip_ == "127.0.0.1" || g_pika_server->master_ip() == master_ip_) &&
       g_pika_server->master_port() == master_port_) {
     res_.SetRes(CmdRes::kOk);
     return;
   }
 
+  // 一旦检查自己和要slaveof的地址都没有问题。那么进行连接。
+
+  // 首先Remove该节点所属的主节点（如果存在的话，不存在则是一个初始化过程（初始化状态机等））。
+  // 另外对本节点的所有slot(dbname + slotid定位)都初始化状态机
   g_pika_server->RemoveMaster();
 
+  //  slaveof no one操作  此时还剩下replicationid没有清除
   if (is_none_) {
     res_.SetRes(CmdRes::kOk);
     g_pika_conf->SetSlaveof(std::string());
@@ -156,7 +173,6 @@ void SlaveofCmd::Do(std::shared_ptr<Slot> slot) {
    * slaveof executor to slave */
 
   bool sm_ret = g_pika_server->SetMaster(master_ip_, static_cast<int32_t>(master_port_));
-
   if (sm_ret) {
     res_.SetRes(CmdRes::kOk);
     g_pika_conf->SetSlaveof(master_ip_ + ":" + std::to_string(master_port_));

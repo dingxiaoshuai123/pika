@@ -263,6 +263,7 @@ enum CmdFlags {
   kCmdFlagsPreDo = 2048,
 };
 
+//  用于构造redis协议 比如 prefix可以是$ *，然后后面加一个数字。之后跟一个string，长度为之前的数字。
 void inline RedisAppendContent(std::string& str, const std::string& value);
 void inline RedisAppendLen(std::string& str, int64_t ori, const std::string& prefix);
 void inline RedisAppendLenUint64(std::string& str, uint64_t ori, const std::string& prefix) {
@@ -425,6 +426,7 @@ class Cmd : public std::enable_shared_from_this<Cmd> {
  public:
   enum CmdStage { kNone, kBinlogStage, kExecuteStage };
   struct HintKeys {
+    //  由两个存储string和int的vector组成
     HintKeys() = default;
     void Push(const std::string& key, int hint) {
       keys.push_back(key);
@@ -438,7 +440,7 @@ class Cmd : public std::enable_shared_from_this<Cmd> {
     ProcessArg() = default;
     ProcessArg(std::shared_ptr<Slot> _slot, std::shared_ptr<SyncMasterSlot> _sync_slot, HintKeys _hint_keys)
         : slot(std::move(_slot)), sync_slot(std::move(_sync_slot)), hint_keys(std::move(_hint_keys)) {}
-    std::shared_ptr<Slot> slot;
+    std::shared_ptr<Slot> slot;  // 要处理的slot
     std::shared_ptr<SyncMasterSlot> sync_slot;
     HintKeys hint_keys;
   };
@@ -492,6 +494,15 @@ class Cmd : public std::enable_shared_from_this<Cmd> {
  protected:
   // enable copy, used default copy
   // Cmd(const Cmd&);
+ /**
+  *
+  * @param slot
+  * @param sync_slot
+  * @param hint_key
+  * 外层函数的处理都是获取相应的slot，最终都会调用该函数，传入一个slot和一个SyncMasterSlot
+  * 在该函数内，会根据Kstage分别调用三个不同的函数。
+  * 该函数不是虚函数，也就说外部函数进行处理之后，都会走到这里
+  */
   void ProcessCommand(const std::shared_ptr<Slot>& slot, const std::shared_ptr<SyncMasterSlot>& sync_slot,
                       const HintKeys& hint_key = HintKeys());
   void InternalProcessCommand(const std::shared_ptr<Slot>& slot, const std::shared_ptr<SyncMasterSlot>& sync_slot,
@@ -500,25 +511,26 @@ class Cmd : public std::enable_shared_from_this<Cmd> {
   bool CheckArg(uint64_t num) const;
   void LogCommand() const;
 
-  std::string name_;
-  int arity_ = -2;
+  std::string name_; //  命令名称，如set
+  int arity_ = -2; //  默认操作数为-2
   uint16_t flag_ = 0;
 
  protected:
-  CmdRes res_;
-  PikaCmdArgsType argv_;
-  std::string db_name_;
+  CmdRes res_;// 命令执行的结果：类型+信息
+  PikaCmdArgsType argv_;//  一个vector，保存命令参数
+  std::string db_name_;//  dbname
 
-  std::weak_ptr<net::NetConn> conn_;
-  std::weak_ptr<std::string> resp_;
-  CmdStage stage_ = kNone;
-  uint64_t do_duration_ = 0;
+  std::weak_ptr<net::NetConn> conn_;  //  使用一个弱指针监视发送该命令的连接是否还存在
+  std::weak_ptr<std::string> resp_;  //  使用一个弱指针监视用于保存返回结果的string是否在存在
+  CmdStage stage_ = kNone; //  命令执行的阶段
+  uint64_t do_duration_ = 0; //  记录执行的时间
 
  private:
-  virtual void DoInitial() = 0;
+  //  该函数会在Init函数中调用
+  virtual void DoInitial() = 0; //  派生类（具体的命令）有自己的执行前初始化和清理函数。
   virtual void Clear(){};
 
-  Cmd& operator=(const Cmd&);
+  Cmd& operator=(const Cmd&); //  禁止赋值（限制对象的复制行为，保证数据的完整和一致，防止被意外修改）
 };
 
 using CmdTable = std::unordered_map<std::string, std::unique_ptr<Cmd>>;

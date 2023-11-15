@@ -37,6 +37,7 @@ class PikaCmdTableManager {
   void InsertCurrentThreadDistributionMap();
   bool CheckCurrentThreadDistributionMapExist(const std::thread::id& tid);
 
+  //  指向CmdTable的指针。CmdTable是一个map，映射关系是命令名称：指向cmd的指针
   std::unique_ptr<CmdTable> cmds_;
 
   std::shared_mutex map_protector_;

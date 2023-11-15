@@ -57,6 +57,8 @@ class NetConn : public std::enable_shared_from_this<NetConn>, public pstd::nonco
 
   std::string ip_port() const { return ip_port_; }
 
+  //  一个连接是否可以进行写会需要判断对应的套接字是否可以写以及是否准备好了写的内容
+  //  在 pika 中，由writable和reply两个bool值决定
   bool is_ready_to_reply() { return is_writable() && is_reply(); }
 
   virtual void set_is_writable(const bool is_writable) { is_writable_ = is_writable; }
@@ -98,10 +100,14 @@ class NetConn : public std::enable_shared_from_this<NetConn>, public pstd::nonco
  private:
   int fd_ = -1;
   std::string ip_port_;
+  //  是否要进行写回
   bool is_reply_ = false;
+  //
   bool is_writable_ = false;
   bool close_ = false;
+  //  时间戳
   struct timeval last_interaction_;
+  //  flags应该是该连接对应套接字的flag
   int flags_ = 0;
   std::string name_;
 
@@ -110,8 +116,10 @@ class NetConn : public std::enable_shared_from_this<NetConn>, public pstd::nonco
 #endif
 
   // thread this conn belong to
+  //  该连接所属的WorkThread
   Thread* thread_ = nullptr;
   // the net epoll this conn belong to
+  //  该连接所属的epoll模型
   NetMultiplexer* net_multiplexer_ = nullptr;
 
 };

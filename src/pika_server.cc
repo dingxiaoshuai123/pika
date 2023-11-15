@@ -476,11 +476,13 @@ Status PikaServer::DoSameThingSpecificDB(const TaskType& type, const std::set<st
   return Status::OK();
 }
 
+
 void PikaServer::PrepareSlotTrySync() {
   std::shared_lock rwl(dbs_rw_);
   ReplState state = force_full_sync_ ? ReplState::kTryDBSync : ReplState::kTryConnect;
   for (const auto& db_item : dbs_) {
     for (const auto& slot_item : db_item.second->slots_) {
+      //  最终还是通过rm来激活所有的从节点slot,传入一个代表远端节点的RmNode IP + Port + slotInfo + 初始状态
       Status s = g_pika_rm->ActivateSyncSlaveSlot(
           RmNode(g_pika_server->master_ip(), g_pika_server->master_port(), db_item.second->GetDBName(),
                  slot_item.second->GetSlotID()),
@@ -491,6 +493,7 @@ void PikaServer::PrepareSlotTrySync() {
     }
   }
   force_full_sync_ = false;
+  //  激活了所有slot的初始化状态，然后开启状态机
   loop_slot_state_machine_ = true;
   LOG(INFO) << "Mark try connect finish";
 }
@@ -519,11 +522,13 @@ void PikaServer::SlotSetSmallCompactionThreshold(uint32_t small_compaction_thres
 
 bool PikaServer::GetDBSlotBinlogOffset(const std::string& db_name, uint32_t slot_id,
                                                BinlogOffset* const boffset) {
+  //  此时获取了rm中masterSlot的指针
   std::shared_ptr<SyncMasterSlot> slot =
       g_pika_rm->GetSyncMasterSlotByName(SlotInfo(db_name, slot_id));
   if (!slot) {
     return false;
   }
+  //  然后通过该指针获取目前的binlog情况:filenum + offset
   Status s = slot->Logger()->GetProducerStatus(&(boffset->filenum), &(boffset->offset));
   return s.ok();
 }
@@ -546,6 +551,7 @@ std::shared_ptr<Slot> PikaServer::GetDBSlotByKey(const std::string& db_name, con
 Status PikaServer::DoSameThingEverySlot(const TaskType& type) {
   std::shared_lock rwl(dbs_rw_);
   std::shared_ptr<SyncSlaveSlot> slave_slot = nullptr;
+  //  slot也是一个逻辑概念，比如1-100 slot是该pika实例负责处理。
   for (const auto& db_item : dbs_) {
     for (const auto& slot_item : db_item.second->slots_) {
       switch (type) {
@@ -556,6 +562,8 @@ Status PikaServer::DoSameThingEverySlot(const TaskType& type) {
             LOG(WARNING) << "Slave Slot: " << db_item.second->GetDBName() << ":"
                          << slot_item.second->GetSlotID() << " Not Found";
           }
+          //  通过dbname + slotid唯一定位一个slot。
+          //  将状态机设置为kNoConnect。
           slave_slot->SetReplState(ReplState::kNoConnect);
           break;
         }
@@ -694,6 +702,7 @@ bool PikaServer::TryAddSlave(const std::string& ip, int64_t port, int fd,
   std::lock_guard l(slave_mutex_);
   auto iter = slaves_.begin();
   while (iter != slaves_.end()) {
+    //  首先在第一次进行元数据的同步时，从Pika的信息不应该出现在这里，如果出现了，那么返回false
     if (iter->ip_port == ip_port) {
       LOG(WARNING) << "Slave Already Exist, ip_port: " << ip << ":" << port;
       return false;
@@ -701,6 +710,7 @@ bool PikaServer::TryAddSlave(const std::string& ip, int64_t port, int fd,
     iter++;
   }
 
+  //  新建立一个SlaveItem加入slaves
   // Not exist, so add new
   LOG(INFO) << "Add New Slave, " << ip << ":" << port;
   SlaveItem s;
@@ -708,7 +718,9 @@ bool PikaServer::TryAddSlave(const std::string& ip, int64_t port, int fd,
   s.ip = ip;
   s.port = static_cast<int32_t>(port);
   s.conn_fd = fd;
+  //  server中会保存一份，状态为SLAVE_ITEM_STAGE_ONE
   s.stage = SLAVE_ITEM_STAGE_ONE;
+  //  这里的dbStruct保存的是从本地获取的，并不是从slave端发来的。
   s.db_structs = db_structs;
   gettimeofday(&s.create_time, nullptr);
   slaves_.push_back(s);
@@ -724,9 +736,12 @@ void PikaServer::SyncError() {
 void PikaServer::RemoveMaster() {
   {
     std::lock_guard l(state_protector_);
+    //  将repl_state_状态置为无连接
     repl_state_ = PIKA_REPL_NO_CONNECT;
+    //  将角色中的slave去除
     role_ &= ~PIKA_ROLE_SLAVE;
 
+    //  如果master_ip_和master_port_不是空，那么说明该节点本身是个从节点
     if (!master_ip_.empty() && master_port_ != -1) {
       g_pika_rm->CloseReplClientConn(master_ip_, master_port_ + kPortShiftReplServer);
       g_pika_rm->LostConnection(master_ip_, master_port_);
@@ -738,6 +753,7 @@ void PikaServer::RemoveMaster() {
     master_ip_ = "";
     master_port_ = -1;
     master_run_id_ = "";
+    //  对每一个slot进行类型为kResetReplState的操作
     DoSameThingEverySlot(TaskType::kResetReplState);
   }
 }
@@ -747,6 +763,7 @@ bool PikaServer::SetMaster(std::string& master_ip, int master_port) {
     master_ip = host_;
   }
   std::lock_guard l(state_protector_);
+  //  验证之前的清除动作是否成功
   if (((role_ ^ PIKA_ROLE_SLAVE) != 0) && repl_state_ == PIKA_REPL_NO_CONNECT) {
     master_ip_ = master_ip;
     master_port_ = master_port;
@@ -765,6 +782,7 @@ bool PikaServer::ShouldMetaSync() {
 void PikaServer::FinishMetaSync() {
   std::lock_guard l(state_protector_);
   assert(repl_state_ == PIKA_REPL_SHOULD_META_SYNC);
+  //  进入下一个阶段
   repl_state_ = PIKA_REPL_META_SYNC_DONE;
 }
 
@@ -843,6 +861,10 @@ void PikaServer::SetFirstMetaSync(bool v) {
   first_meta_sync_ = v;
 }
 
+// 调用线程池的SchedulePool接口
+//  这里就是一个命令开始执行的最开始的入口，目前是将所有的命令都统一的放入线程池中，由线程池去自己做调度
+//  如果要实现快慢命令分离，在命令的arg中添加一个字段，代表该命令是否为满命令，
+//  然后还是交给线程池去处理。在线程池中，会解析这个arg，然后放入不同的
 void PikaServer::ScheduleClientPool(net::TaskFunc func, void* arg) { pika_client_processor_->SchedulePool(func, arg); }
 
 void PikaServer::ScheduleClientBgThreads(net::TaskFunc func, void* arg, const std::string& hash_str) {
@@ -934,8 +956,12 @@ void PikaServer::TryDBSync(const std::string& ip, int port, const std::string& d
                  << ", TryDBSync Failed";
     return;
   }
+  //  拿到该Slot的bgSave信息
   BgSaveInfo bgsave_info = slot->bgsave_info();
+  //   binlog文件地址
   std::string logger_filename = sync_slot->Logger()->filename();
+
+  //
   if (pstd::IsDir(bgsave_info.path) != 0 ||
       !pstd::FileExists(NewFileName(logger_filename, bgsave_info.offset.b_offset.filenum)) ||
       top - bgsave_info.offset.b_offset.filenum > kDBSyncMaxGap) {

@@ -363,19 +363,23 @@ bool SyncMasterSlot::BinlogCloudPurge(uint32_t index) {
 }
 
 Status SyncMasterSlot::CheckSyncTimeout(uint64_t now) {
+  //  从协调者拿到从slot。
   std::unordered_map<std::string, std::shared_ptr<SlaveNode>> slaves = GetAllSlaveNodes();
 
   std::vector<Node> to_del;
+  //  遍历所有的slave slot
   for (auto& slave_iter : slaves) {
     std::shared_ptr<SlaveNode> slave_ptr = slave_iter.second;
     std::lock_guard l(slave_ptr->slave_mu);
     if (slave_ptr->LastRecvTime() + kRecvKeepAliveTimeout < now) {
+      //  超时的节点放在to_del中
       to_del.emplace_back(slave_ptr->Ip(), slave_ptr->Port());
     } else if (slave_ptr->LastSendTime() + kSendKeepAliveTimeout < now &&
                slave_ptr->sent_offset == slave_ptr->acked_offset) {
       std::vector<WriteTask> task;
       RmNode rm_node(slave_ptr->Ip(), slave_ptr->Port(), slave_ptr->DBName(), slave_ptr->SlotId(),
                      slave_ptr->SessionId());
+      //  没有超时，就发送一个空任务包，当作心跳包发送
       WriteTask empty_task(rm_node, BinlogChip(LogOffset(), ""), LogOffset());
       task.push_back(empty_task);
       Status s = g_pika_rm->SendSlaveBinlogChipsRequest(slave_ptr->Ip(), slave_ptr->Port(), task);
@@ -591,8 +595,11 @@ Status SyncSlaveSlot::GetInfo(std::string* info) {
 
 void SyncSlaveSlot::Activate(const RmNode& master, const ReplState& repl_state) {
   std::lock_guard l(slot_mu_);
+  //  保存其所属的远端slot
   m_info_ = master;
+  //  初始化状态机的状态。
   repl_state_ = repl_state;
+  //  更新rm中代表远端节点的最后接受其信息时间，注意是在slaveSlot中。
   m_info_.SetLastRecvTime(pstd::NowMicros());
 }
 
@@ -700,6 +707,7 @@ bool PikaReplicaManager::CheckMasterSyncFinished() {
   return true;
 }
 
+//  所有的一切slot都只是在特定的场合记录特定的指标。
 void PikaReplicaManager::InitSlot() {
   std::vector<DBStruct> db_structs = g_pika_conf->db_structs();
   for (const auto& db : db_structs) {
@@ -980,16 +988,21 @@ Status PikaReplicaManager::SelectLocalIp(const std::string& remote_ip, const int
 Status PikaReplicaManager::ActivateSyncSlaveSlot(const RmNode& node, const ReplState& repl_state) {
   std::shared_lock l(slots_rw_);
   const SlotInfo& p_info = node.NodeSlotInfo();
+  //  首先在rm中保存的slave_slots中寻找对应的slot
   if (sync_slave_slots_.find(p_info) == sync_slave_slots_.end()) {
     return Status::NotFound("Sync Slave Slot " + node.ToString() + " not found");
   }
+  //  然后获取该slot对应的state
   ReplState ssp_state = sync_slave_slots_[p_info]->State();
+  //  判断是否处于未激活状态
   if (ssp_state != ReplState::kNoConnect && ssp_state != ReplState::kDBNoConnect) {
     return Status::Corruption("Sync Slave Slot in " + ReplStateMsg[ssp_state]);
   }
+  //  连一下对应ip + port拿到local ip
   std::string local_ip;
   Status s = SelectLocalIp(node.Ip(), node.Port(), &local_ip);
   if (s.ok()) {
+    //  然后更新rm中的slave_slot信息，注意：没有操作rm中的master_slot
     sync_slave_slots_[p_info]->SetLocalIp(local_ip);
     sync_slave_slots_[p_info]->Activate(node, repl_state);
   }
@@ -1007,8 +1020,10 @@ Status PikaReplicaManager::DeactivateSyncSlaveSlot(const SlotInfo& p_info) {
 
 Status PikaReplicaManager::SendMetaSyncRequest() {
   Status s;
+  // 判断pikaServer上一次获取到MetaSync的时间戳是否已经超出了阈值 或者 是第一次请求获取MetaSync
   if (time(nullptr) - g_pika_server->GetMetaSyncTimestamp() >= PIKA_META_SYNC_MAX_WAIT_TIME ||
       g_pika_server->IsFirstMetaSync()) {
+    //  然后调用副本管理器的pika_repl_client_线程，发送SendMetaSync。
     s = pika_repl_client_->SendMetaSync();
     if (s.ok()) {
       g_pika_server->UpdateMetaSyncTimestamp();
@@ -1070,18 +1085,22 @@ Status PikaReplicaManager::SendSlotTrySyncRequest(const std::string& db_name, si
 
 Status PikaReplicaManager::SendSlotDBSyncRequest(const std::string& db_name, size_t slot_id) {
   BinlogOffset boffset;
+  //  通过Server获取本机指定Slot的masterSlot中的BinlogOffset
   if (!g_pika_server->GetDBSlotBinlogOffset(db_name, slot_id, &boffset)) {
     LOG(WARNING) << "Slot: " << db_name << ":" << slot_id << ",  Get slot binlog offset failed";
     return Status::Corruption("Slot get binlog offset error");
   }
 
+  //  此时获取本机的DB中的Slot
   std::shared_ptr<Slot> slot = g_pika_server->GetDBSlotById(db_name, slot_id);
   if (!slot) {
     LOG(WARNING) << "Slot: " << db_name << ":" << slot_id << ", NotFound";
     return Status::Corruption("Slot not found");
   }
+  //  进行全量同步的准备：通过Slot中的一些地址信息，创建一些用于保存数据的文件
   slot->PrepareRsync();
 
+  //  又从rm中拿出对应的slaveslot
   std::shared_ptr<SyncSlaveSlot> slave_slot =
       GetSyncSlaveSlotByName(SlotInfo(db_name, slot_id));
   if (!slave_slot) {
@@ -1089,6 +1108,7 @@ Status PikaReplicaManager::SendSlotDBSyncRequest(const std::string& db_name, siz
     return Status::Corruption("Slave Slot not found");
   }
 
+  //  通rm的replication_client发送dbsync请求：其中boffset是从masterSlave中拿出来的（存疑）
   Status status = pika_repl_client_->SendSlotDBSync(slave_slot->MasterIp(), slave_slot->MasterPort(),
                                                     db_name, slot_id, boffset, slave_slot->LocalIp());
 
@@ -1144,13 +1164,17 @@ std::shared_ptr<SyncSlaveSlot> PikaReplicaManager::GetSyncSlaveSlotByName(const 
 }
 
 Status PikaReplicaManager::RunSyncSlaveSlotStateMachine() {
+  //  上一把锁锁住了rm中所有的slaveslot
   std::shared_lock l(slots_rw_);
   for (const auto& item : sync_slave_slots_) {
+    //  SlotInfo ： db + id
     SlotInfo p_info = item.first;
+    //  一个slaveSlot：一个用于全量同步的rsync_client + 进行同步的远端slot：RmNode + 状态 + localIp
     std::shared_ptr<SyncSlaveSlot> s_slot = item.second;
     if (s_slot->State() == ReplState::kTryConnect) {
       SendSlotTrySyncRequest(p_info.db_name_, p_info.slot_id_);
     } else if (s_slot->State() == ReplState::kTryDBSync) {
+      //  Slot中的第一步：发送全量同步请求
       SendSlotDBSyncRequest(p_info.db_name_, p_info.slot_id_);
     } else if (s_slot->State() == ReplState::kWaitReply) {
       continue;

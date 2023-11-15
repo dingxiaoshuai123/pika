@@ -70,7 +70,7 @@ ServerThread::ServerThread(int port, int cron_interval, const ServerHandle* hand
       port_(port) {
   net_multiplexer_.reset(CreateNetMultiplexer());
   net_multiplexer_->Initialize();
-  ips_.insert("0.0.0.0");
+  ips_.insert("0.0.0.0"); //  初始化时首先插入一个0.0.0.0，表示接受来自任何IP地址的请求
 }
 
 ServerThread::ServerThread(const std::string& bind_ip, int port, int cron_interval, const ServerHandle* handle)
@@ -134,6 +134,9 @@ int ServerThread::InitHandle() {
     ips_.insert("0.0.0.0");
   }
 
+  //  在初始化的时候，对于每一个Ip都监听同一个port端口
+  //  假设一共有n个ip地址，那么一共监听了n个套接字{ipn:port}  ip不同，port相同
+  //  所以在server_fds_中也会有n个fd,同样会有n个套接字对象
   for (const auto& ip : ips_) {
     socket_p = std::make_shared<ServerSocket>(port_);
     server_sockets_.emplace_back(socket_p);
@@ -195,11 +198,13 @@ void* ServerThread::ThreadMain() {
 
     nfds = net_multiplexer_->NetPoll(timeout);
     for (int i = 0; i < nfds; i++) {
+      //  遍历所有的pfe，里面有对应的活跃fd和mask
       pfe = (net_multiplexer_->FiredEvents()) + i;
       fd = pfe->fd;
 
 
       if (pfe->fd == net_multiplexer_->NotifyReceiveFd()) {
+        //  如果是Notifyfd就绪，那么处理notify事件
         ProcessNotifyEvents(pfe);
         continue;
       }
@@ -208,6 +213,7 @@ void* ServerThread::ThreadMain() {
        * Handle server event
        */
       if (server_fds_.find(fd) != server_fds_.end()) {
+        //  如果是监听端口就绪，那么调用accept接受这个连接，并且
         if ((pfe->mask & kReadable) != 0) {
           connfd = accept(fd, reinterpret_cast<struct sockaddr*>(&cliaddr), &clilen);
           if (connfd == -1) {
@@ -224,8 +230,10 @@ void* ServerThread::ThreadMain() {
           }
 
           // Just ip
+          // 拿到该连接客户端的ip
           ip_port = inet_ntop(AF_INET, &cliaddr.sin_addr, ip_addr, sizeof(ip_addr));
 
+          // 对ip进行检查，可以在这里设置黑名单，判断连接数是否已满等等。
           if (!handle_->AccessHandle(ip_port) || !handle_->AccessHandle(connfd, ip_port)) {
             close(connfd);
             continue;
@@ -239,25 +247,30 @@ void* ServerThread::ThreadMain() {
            * Handle new connection,
            * implemented in derived class
            */
+          //  对于一个新连接该怎么做，由不同种类的派生类决定(比如dispatch和holy都是服务器对象，但是处理新连接的方式就不一样)
           HandleNewConn(connfd, ip_port);
 
         } else if ((pfe->mask & kErrorEvent) != 0) {
           /*
            * this branch means there is error on the listen fd
            */
+          //  监听fd出了问题，那么直接关闭掉fd
           close(pfe->fd);
           continue;
         }
+        //  监听套接字不处理写事件
       } else {
         /*
          * Handle connection's event
          * implemented in derived class
          */
+        //  另外的fd就是connfd，同样交给子类实现。
         HandleConnEvent(pfe);
       }
     }
   }
 
+  //  如果服务终止了，那么清理存储的所有监听套接字对象和存储的监听套接字fd，其实代表同一个资源
   server_sockets_.clear();
   server_fds_.clear();
 
