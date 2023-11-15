@@ -28,7 +28,7 @@ type BackendConn struct {
 	stop sync.Once
 	addr string
 
-	input chan *Request
+	input chan *Request //  一个channel，每当有Request进来，都会放在里面进行处理
 	retry struct {
 		fails int
 		delay Delay
@@ -38,14 +38,14 @@ type BackendConn struct {
 	closed atomic2.Bool
 	config *Config
 
-	database int
+	database int //  所属的db
 }
 
 func NewBackendConn(addr string, database int, config *Config) *BackendConn {
 	bc := &BackendConn{
 		addr: addr, config: config, database: database,
 	}
-	bc.input = make(chan *Request, 1024)
+	bc.input = make(chan *Request, 1024) //  创建一个容量为1024的channel，Session构建出来的Request，会放入到某个相应的input中
 	bc.retry.delay = &DelayExp2{
 		Min: 50, Max: 5000,
 		Unit: time.Millisecond,
@@ -62,7 +62,7 @@ func (bc *BackendConn) Addr() string {
 
 func (bc *BackendConn) Close() {
 	bc.stop.Do(func() {
-		close(bc.input)
+		close(bc.input) //  确保只执行一次，在关闭连接的时候，关闭channel
 	})
 	bc.closed.Set(true)
 }
@@ -73,14 +73,15 @@ func (bc *BackendConn) IsConnected() bool {
 
 func (bc *BackendConn) PushBack(r *Request) {
 	if r.Batch != nil {
-		r.Batch.Add(1)
+		r.Batch.Add(1) // 该Reqeust中的计数信号量+1
 	}
-	bc.input <- r
+	bc.input <- r //  将r放入channel中
 }
 
 func (bc *BackendConn) KeepAlive() bool {
+	//  BackendConn的保活机制
 	if len(bc.input) != 0 {
-		return false
+		return false //  如果channel中还存在数据，返回false
 	}
 	switch bc.state.Int64() {
 	default:
@@ -155,9 +156,10 @@ func init() {
 }
 
 func (bc *BackendConn) newBackendReader(round int, config *Config) (*redis.Conn, chan<- *Request, error) {
+	//  创建一条Redis连接，并且返回该连接、一个只能加入Request*的通道以及一个error
 	c, err := redis.DialTimeout(bc.addr, time.Second*5,
 		config.BackendRecvBufsize.AsInt(),
-		config.BackendSendBufsize.AsInt())
+		config.BackendSendBufsize.AsInt()) //  创建一个redis连接
 	if err != nil {
 		return nil, nil, err
 	}
@@ -174,8 +176,8 @@ func (bc *BackendConn) newBackendReader(round int, config *Config) (*redis.Conn,
 		return nil, nil, err
 	}
 
-	tasks := make(chan *Request, config.BackendMaxPipeline)
-	go bc.loopReader(tasks, c, round)
+	tasks := make(chan *Request, config.BackendMaxPipeline) //  创建一个channel--tasks
+	go bc.loopReader(tasks, c, round)                       //  启动一个loopReader协程，参数是一个只能读的tasks
 
 	return c, tasks, nil
 }
@@ -239,12 +241,12 @@ func (bc *BackendConn) selectDatabase(c *redis.Conn, database int) error {
 }
 
 func (bc *BackendConn) setResponse(r *Request, resp *redis.Resp, err error) error {
-	r.Resp, r.Err = resp, err
+	r.Resp, r.Err = resp, err //  赋值
 	if r.Group != nil {
-		r.Group.Done()
+		r.Group.Done() //  拿到数据后，将对应的计数器-1
 	}
 	if r.Batch != nil {
-		r.Batch.Done()
+		r.Batch.Done() //  是同上
 	}
 	return err
 }
@@ -257,10 +259,10 @@ var (
 func (bc *BackendConn) run() {
 	log.Warnf("backend conn [%p] to %s, db-%d start service",
 		bc, bc.addr, bc.database)
-	for round := 0; bc.closed.IsFalse(); round++ {
+	for round := 0; bc.closed.IsFalse(); round++ { //  一轮又一轮的执行，只要BackendConn没有关闭
 		log.Warnf("backend conn [%p] to %s, db-%d round-[%d]",
 			bc, bc.addr, bc.database, round)
-		if err := bc.loopWriter(round); err != nil {
+		if err := bc.loopWriter(round); err != nil { //  同步调用loopWriter函数，如果发生错误，会有一个delay时间
 			bc.delayBeforeRetry()
 		}
 	}
@@ -275,20 +277,21 @@ var (
 
 func (bc *BackendConn) loopReader(tasks <-chan *Request, c *redis.Conn, round int) (err error) {
 	defer func() {
-		c.Close()
+		//  处理完现有的所有task后，就会关闭该连接，如果task中有剩余，全部返回给客户端错误
+		c.Close() //  关闭连接
 		for r := range tasks {
 			bc.setResponse(r, nil, ErrBackendConnReset)
-		}
+		} //  读出tasks中所有的Request，并返回错误
 		log.WarnErrorf(err, "backend conn [%p] to %s, db-%d reader-[%d] exit",
 			bc, bc.addr, bc.database, round)
 	}()
-	for r := range tasks {
-		resp, err := c.Decode()
+	for r := range tasks { //  从只读的channel中读取Request
+		resp, err := c.Decode() //  从redis连接中解析读到的数据，得到resp；应该是按照顺序排列，这边只需要按照顺序读取解析就可以。
 		r.ReceiveFromServerTime = time.Now().UnixNano()
 		if err != nil {
 			return bc.setResponse(r, nil, fmt.Errorf("backend conn failure, %s", err))
 		}
-		if resp != nil && resp.IsError() {
+		if resp != nil && resp.IsError() { //  返回结果中有错误
 			switch {
 			case bytes.HasPrefix(resp.Value, errRespMasterDown):
 				if bc.state.CompareAndSwap(stateConnected, stateDataStale) {
@@ -302,7 +305,7 @@ func (bc *BackendConn) loopReader(tasks <-chan *Request, c *redis.Conn, round in
 				}
 			}
 		}
-		bc.setResponse(r, resp, nil)
+		bc.setResponse(r, resp, nil) //  设置一个Request的返回值
 	}
 	return nil
 }
@@ -328,6 +331,7 @@ func (bc *BackendConn) delayBeforeRetry() {
 
 func (bc *BackendConn) loopWriter(round int) (err error) {
 	defer func() {
+		// 一轮loopWrite之后，会保证input没有残留数据
 		for i := len(bc.input); i != 0; i-- {
 			r := <-bc.input
 			bc.setResponse(r, nil, ErrBackendConnReset)
@@ -335,7 +339,8 @@ func (bc *BackendConn) loopWriter(round int) (err error) {
 		log.WarnErrorf(err, "backend conn [%p] to %s, db-%d writer-[%d] exit",
 			bc, bc.addr, bc.database, round)
 	}()
-	c, tasks, err := bc.newBackendReader(round, bc.config)
+	c, tasks, err := bc.newBackendReader(round, bc.config) // 会调用newBackendReader：返回一个Redis连接c、一个只可读的tasks和一个可能的error
+	//  并且启动了一个loopReader，从Server中读取数据并解析，然后给tasks中的Request赋予响应值
 	if err != nil {
 		return err
 	}
@@ -351,7 +356,7 @@ func (bc *BackendConn) loopWriter(round int) (err error) {
 	p.MaxInterval = time.Millisecond
 	p.MaxBuffered = cap(tasks) / 2
 
-	for r := range bc.input {
+	for r := range bc.input { //  遍历input，将里面的请求发送给Server中
 		if r.IsReadOnly() && r.IsBroken() {
 			bc.setResponse(r, nil, ErrRequestIsBroken)
 			continue
@@ -362,7 +367,7 @@ func (bc *BackendConn) loopWriter(round int) (err error) {
 		if err := p.Flush(len(bc.input) == 0); err != nil {
 			return bc.setResponse(r, nil, fmt.Errorf("backend conn failure, %s", err))
 		} else {
-			tasks <- r
+			tasks <- r // 如果编码且发送成功，那么将这个已经向Server写入的Request加入tasks中
 		}
 		r.SendToServerTime = time.Now().UnixNano()
 	}
@@ -370,11 +375,12 @@ func (bc *BackendConn) loopWriter(round int) (err error) {
 }
 
 type sharedBackendConn struct {
+	//  一组conn
 	addr string
 	host []byte
 	port []byte
 
-	owner *sharedBackendConnPool
+	owner *sharedBackendConnPool // 所属的连接池
 	conns [][]*BackendConn
 
 	single []*BackendConn
@@ -394,8 +400,10 @@ func newSharedBackendConn(addr string, pool *sharedBackendConnPool) *sharedBacke
 	s.owner = pool
 	s.conns = make([][]*BackendConn, pool.config.BackendNumberDatabases)
 	for database := range s.conns {
+		//  db num
 		parallel := make([]*BackendConn, pool.parallel)
 		for i := range parallel {
+			//  parallel num
 			parallel[i] = NewBackendConn(addr, database, pool.config)
 		}
 		s.conns[database] = parallel
@@ -418,6 +426,7 @@ func (s *sharedBackendConn) Addr() string {
 }
 
 func (s *sharedBackendConn) Release() {
+	//  不再使用，引用计数-1
 	if s == nil {
 		return
 	}
@@ -438,6 +447,7 @@ func (s *sharedBackendConn) Release() {
 }
 
 func (s *sharedBackendConn) Retain() *sharedBackendConn {
+	//  引用计数 +1
 	if s == nil {
 		return nil
 	}
@@ -492,7 +502,7 @@ type sharedBackendConnPool struct {
 	config   *Config
 	parallel int
 
-	pool map[string]*sharedBackendConn
+	pool map[string]*sharedBackendConn //  每一个Server使用一个sharedBackendConn，使用Ip+Port作为key
 }
 
 func newSharedBackendConnPool(config *Config, parallel int) *sharedBackendConnPool {

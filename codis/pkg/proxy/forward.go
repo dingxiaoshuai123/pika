@@ -34,12 +34,12 @@ func (d *forwardSync) GetId() int {
 
 func (d *forwardSync) Forward(s *Slot, r *Request, hkey []byte) error {
 	s.lock.RLock()
-	bc, err := d.process(s, r, hkey)
+	bc, err := d.process(s, r, hkey) //通过Process最终拿到一个conn
 	s.lock.RUnlock()
 	if err != nil {
 		return err
 	}
-	bc.PushBack(r)
+	bc.PushBack(r) // 并且将Request放入拿到的backconn的input channel中
 	return nil
 }
 

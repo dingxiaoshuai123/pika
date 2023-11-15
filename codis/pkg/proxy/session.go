@@ -126,7 +126,7 @@ func (s *Session) Start(d *Router) {
 			return
 		}
 
-		if !d.isOnline() {
+		if !d.isOnline() { //  检查用于路由的组件是否上线
 			go func() {
 				s.Conn.Encode(redis.NewErrorf("ERR router is not online"), true)
 				s.CloseWithError(ErrRouterNotOnline)
@@ -137,10 +137,10 @@ func (s *Session) Start(d *Router) {
 			return
 		}
 
-		tasks := NewRequestChanBuffer(1024)
+		tasks := NewRequestChanBuffer(1024) //  产生一个大小为1024的生产者消费者队列
 
 		go func() {
-			s.loopWriter(tasks)
+			s.loopWriter(tasks) // 开启一个loopWrite协程，用于向客户端写回结果
 			decrSessions()
 		}()
 
@@ -162,7 +162,7 @@ func (s *Session) loopReader(tasks *RequestChan, d *Router) (err error) {
 	)
 
 	for !s.quit {
-		multi, err := s.Conn.DecodeMultiBulk()
+		multi, err := s.Conn.DecodeMultiBulk() //  一个阻塞的操作，直到接收到来自redis-cli的数据
 		if err != nil {
 			return err
 		}
@@ -171,7 +171,7 @@ func (s *Session) loopReader(tasks *RequestChan, d *Router) (err error) {
 		}
 		s.incrOpTotal()
 
-		tasksLen := tasks.Buffered()
+		tasksLen := tasks.Buffered() //  请求队列已存在的长度
 		if tasksLen > maxPipelineLen {
 			return s.incrOpFails(nil, ErrTooManyPipelinedRequests)
 		}
@@ -180,13 +180,14 @@ func (s *Session) loopReader(tasks *RequestChan, d *Router) (err error) {
 		s.LastOpUnix = start.Unix()
 		s.Ops++
 
-		r := &Request{}
+		r := &Request{} //  构建一个Request，贯穿全局的Request
 		r.Multi = multi
 		r.Batch = &sync.WaitGroup{}
 		r.Database = s.database
 		r.ReceiveTime = start.UnixNano()
 		r.TasksLen = int64(tasksLen)
 
+		//  使用Router和Request，路由一个Request到对应的slot上
 		if err := s.handleRequest(r, d); err != nil {
 			r.Resp = redis.NewErrorf("ERR handle request, %s", err)
 			tasks.PushBack(r)
@@ -194,11 +195,15 @@ func (s *Session) loopReader(tasks *RequestChan, d *Router) (err error) {
 				return err
 			}
 		} else {
-			tasks.PushBack(r)
+			tasks.PushBack(r) //  成功将Request加入了对应backendConn的input中，然后将Request加入tasks中。
 		}
 	}
 	return nil
 }
+
+/**
+loopWrite和loopRead只要是用于生产和消费RequestChan。
+*/
 
 func (s *Session) loopWriter(tasks *RequestChan) (err error) {
 	defer func() {
@@ -214,7 +219,7 @@ func (s *Session) loopWriter(tasks *RequestChan) (err error) {
 	)
 	var cmd = make([]byte, 128)
 
-	p := s.Conn.FlushEncoder()
+	p := s.Conn.FlushEncoder() //  刷新编码器
 	p.MaxInterval = time.Millisecond
 	p.MaxBuffered = maxPipelineLen / 2
 
@@ -236,6 +241,7 @@ func (s *Session) loopWriter(tasks *RequestChan) (err error) {
 		} else {
 			s.incrOpStats(r, resp.Type)
 		}
+		//  用于将结果写入编码器然后刷新写回
 		if fflush {
 			s.flushOpStats(false)
 		}
@@ -280,7 +286,7 @@ func (s *Session) handleResponse(r *Request) (*redis.Resp, error) {
 }
 
 func (s *Session) handleRequest(r *Request, d *Router) error {
-	opstr, flag, err := getOpInfo(r.Multi)
+	opstr, flag, err := getOpInfo(r.Multi) //  拿到相应的Opt信息
 	if err != nil {
 		return err
 	}
@@ -288,6 +294,7 @@ func (s *Session) handleRequest(r *Request, d *Router) error {
 	r.OpFlag = flag
 	r.Broken = &s.broken
 
+	//  对该Opt做一个权限的验证
 	if flag.IsNotAllowed() {
 		return fmt.Errorf("command '%s' is not allowed", opstr)
 	}
@@ -331,7 +338,7 @@ func (s *Session) handleRequest(r *Request, d *Router) error {
 	case "SLOTSMAPPING":
 		return s.handleRequestSlotsMapping(r, d)
 	default:
-		return d.dispatch(r)
+		return d.dispatch(r) //  最终调用Router的Dispatch来分发这个Request
 	}
 }
 

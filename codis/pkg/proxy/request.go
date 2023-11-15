@@ -12,8 +12,8 @@ import (
 )
 
 type Request struct {
-	Multi []*redis.Resp
-	Batch *sync.WaitGroup
+	Multi []*redis.Resp   //  redis协议的信息
+	Batch *sync.WaitGroup //  一个计数信号量
 	Group *sync.WaitGroup
 
 	Broken *atomic2.Bool
