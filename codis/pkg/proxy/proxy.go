@@ -628,10 +628,11 @@ func (p *Proxy) Stats(flags StatsFlags) *Stats {
 	stats.Ops.Redis.Errors = OpRedisErrors()
 	stats.Ops.QPS = OpQPS()
 
-	if flags.HasBit(StatsCmds) {
-		stats.Ops.Cmd = GetOpStatsAll()
-	}
+	//if flags.HasBit(StatsCmds) {
+	//	stats.Ops.Cmd = GetOpStatsAll()
+	//}
 
+	stats.Ops.Cmd = GetOpStatsAll()
 	stats.Sessions.Total = SessionsTotal()
 	stats.Sessions.Alive = SessionsAlive()
 

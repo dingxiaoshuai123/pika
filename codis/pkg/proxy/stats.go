@@ -14,6 +14,29 @@ import (
 	"pika/codis/v2/pkg/utils/sync2/atomic2"
 )
 
+const (
+	IntervalNum = 5
+)
+
+// second
+var IntervalMark = [IntervalNum]int64{1, 10, 60, 600, 3600}
+
+var LastRefreshTime = [IntervalNum]time.Time{time.Now()}
+
+type topInfo struct {
+	interval int64
+	calls    atomic2.Int64
+	nsecs    atomic2.Int64
+	nsecsmax atomic2.Int64
+	avg      atomic2.Int64
+	qps      atomic2.Int64
+
+	tp90 atomic2.Int64
+	tp99 atomic2.Int64
+	max  atomic2.Int64
+}
+
+// 每一个命令都有一个opStats，代表该命令执行一段时间的时的一个状态
 type opStats struct {
 	opstr string
 	calls atomic2.Int64
@@ -22,14 +45,21 @@ type opStats struct {
 	redis struct {
 		errors atomic2.Int64
 	}
+	//  不同时间段之内的相关top信息。
+	topInfo [IntervalNum]*topInfo
 }
 
 func (s *opStats) OpStats() *OpStats {
 	o := &OpStats{
-		OpStr: s.opstr,
+		OpStr: "DingXS",
 		Calls: s.calls.Int64(),
 		Usecs: s.nsecs.Int64() / 1e3,
 		Fails: s.fails.Int64(),
+		QPS:   1,
+		AVG:   50,
+		TP90:  10,
+		TP99:  100,
+		MAX:   1000,
 	}
 	if o.Calls != 0 {
 		o.UsecsPercall = o.Usecs / o.Calls
@@ -38,6 +68,7 @@ func (s *opStats) OpStats() *OpStats {
 	return o
 }
 
+// 可以用于json化的struct
 type OpStats struct {
 	OpStr        string `json:"opstr"`
 	Calls        int64  `json:"calls"`
@@ -45,11 +76,17 @@ type OpStats struct {
 	UsecsPercall int64  `json:"usecs_percall"`
 	Fails        int64  `json:"fails"`
 	RedisErrType int64  `json:"redis_errtype"`
+	QPS          int64  `json:"qps"`
+	AVG          int64  `json:"avg"`
+	TP90         int64  `json:"tp90"`
+	TP99         int64  `json:"tp99"`
+	MAX          int64  `json:"max"`
 }
 
 var cmdstats struct {
 	sync.RWMutex
 
+	//  每一个命令都有一个opStats，然后在opStas中添加了延时信息。
 	opmap map[string]*opStats
 	total atomic2.Int64
 	fails atomic2.Int64
@@ -57,11 +94,15 @@ var cmdstats struct {
 		errors atomic2.Int64
 	}
 
-	qps atomic2.Int64
+	qps           atomic2.Int64
+	refreshPeriod atomic2.Int64
 }
 
 func init() {
 	cmdstats.opmap = make(map[string]*opStats, 128)
+	for i := 0; i < IntervalNum; i++ {
+		LastRefreshTime[i] = time.Now()
+	}
 	go func() {
 		for {
 			start := time.Now()
