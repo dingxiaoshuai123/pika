@@ -86,6 +86,8 @@ PikaServer::PikaServer()
   pika_client_processor_ = std::make_unique<PikaClientProcessor>(g_pika_conf->thread_pool_size(), 100000);
   instant_ = std::make_unique<Instant>();
   exit_mutex_.lock();
+  int64_t lastsave = GetLastSaveTime(g_pika_conf->bgsave_path());
+  UpdateLastSave(lastsave);
 }
 
 PikaServer::~PikaServer() {
@@ -373,6 +375,15 @@ bool PikaServer::IsDBBinlogIoError(const std::string& db_name) {
   return db ? db->IsBinlogIoError() : true;
 }
 
+std::set<std::string> PikaServer::GetAllDBName() {
+  std::set<std::string> dbs;
+  std::shared_lock l(dbs_rw_);
+  for (const auto& db_item : dbs_) {
+    dbs.insert(db_item.first);
+  }
+  return dbs;
+}
+
 Status PikaServer::DoSameThingSpecificDB(const std::set<std::string>& dbs, const TaskArg& arg) {
   std::shared_lock rwl(dbs_rw_);
   for (const auto& db_item : dbs_) {
@@ -463,8 +474,18 @@ void PikaServer::DBSetSmallCompactionThreshold(uint32_t small_compaction_thresho
   }
 }
 
+void PikaServer::DBSetSmallCompactionDurationThreshold(uint32_t small_compaction_duration_threshold) {
+  std::shared_lock rwl(dbs_rw_);
+  for (const auto& db_item : dbs_) {
+    db_item.second->DbRWLockReader();
+    db_item.second->storage()->SetSmallCompactionDurationThreshold(small_compaction_duration_threshold);
+    db_item.second->DbRWUnLock();
+  }
+}
+
 bool PikaServer::GetDBBinlogOffset(const std::string& db_name, BinlogOffset* const boffset) {
-  std::shared_ptr<SyncMasterDB> db = g_pika_rm->GetSyncMasterDBByName(DBInfo(db_name));
+  std::shared_ptr<SyncMasterDB> db =
+      g_pika_rm->GetSyncMasterDBByName(DBInfo(db_name));
   if (!db) {
     return false;
   }
@@ -1052,9 +1073,15 @@ void PikaServer::SlowlogPushEntry(const PikaCmdArgsType& argv, int64_t time, int
     entry.start_time = time;
     entry.duration = duration;
     slowlog_list_.push_front(entry);
+    slowlog_counter_++;
   }
 
   SlowlogTrim();
+}
+
+uint64_t PikaServer::SlowlogCount() {
+  std::shared_lock l(slowlog_protector_);
+  return slowlog_counter_;
 }
 
 void PikaServer::ResetStat() {
@@ -1078,7 +1105,7 @@ void PikaServer::ResetLastSecQuerynum() {
 }
 
 void PikaServer::UpdateQueryNumAndExecCountDB(const std::string& db_name, const std::string& command,
-                                                 bool is_write) {
+                                              bool is_write) {
   std::string cmd(command);
   statistic_.server_stat.qps.querynum++;
   statistic_.server_stat.exec_count_db[pstd::StringToUpper(cmd)]++;
@@ -1209,13 +1236,7 @@ void PikaServer::AutoCompactRange() {
     if (last_check_compact_time_.tv_sec == 0 || now.tv_sec - last_check_compact_time_.tv_sec >= interval * 3600) {
       gettimeofday(&last_check_compact_time_, nullptr);
       if ((static_cast<double>(free_size) / static_cast<double>(total_size)) * 100 >= usage) {
-        std::set<std::string> dbs;
-        {
-          std::shared_lock l(dbs_rw_);
-          for (const auto& db_item : dbs_) {
-            dbs.insert(db_item.first);
-          }
-        }
+        std::set<std::string> dbs = g_pika_server->GetAllDBName();
         Status s = DoSameThingSpecificDB(dbs, {TaskType::kCompactAll});
         if (s.ok()) {
           LOG(INFO) << "[Interval]schedule compactRange, freesize: " << free_size / 1048576
@@ -1442,14 +1463,14 @@ void PikaServer::InitStorageOptions() {
   }
 
   storage_options_.options.rate_limiter =
-    std::shared_ptr<rocksdb::RateLimiter>(
-      rocksdb::NewGenericRateLimiter(
-        g_pika_conf->rate_limiter_bandwidth(),
-        g_pika_conf->rate_limiter_refill_period_us(),
-        static_cast<int32_t>(g_pika_conf->rate_limiter_fairness()),
-        rocksdb::RateLimiter::Mode::kWritesOnly,
-        g_pika_conf->rate_limiter_auto_tuned()
-      ));
+      std::shared_ptr<rocksdb::RateLimiter>(
+          rocksdb::NewGenericRateLimiter(
+              g_pika_conf->rate_limiter_bandwidth(),
+              g_pika_conf->rate_limiter_refill_period_us(),
+              static_cast<int32_t>(g_pika_conf->rate_limiter_fairness()),
+              rocksdb::RateLimiter::Mode::kWritesOnly,
+              g_pika_conf->rate_limiter_auto_tuned()
+                  ));
 
   // For Storage small compaction
   storage_options_.statistics_max_size = g_pika_conf->max_cache_statistic_keys();
@@ -1616,6 +1637,23 @@ void PikaServer::Bgslotscleanup(std::vector<int> cleanupSlots, const std::shared
   // Start new thread if needed
   bgslots_cleanup_thread_.StartThread();
   bgslots_cleanup_thread_.Schedule(&DoBgslotscleanup, static_cast<void*>(this));
+}
+int64_t PikaServer::GetLastSaveTime(const std::string& dir_path) {
+  std::vector<std::string> dump_dir;
+  // Dump file is not exist
+  if (!pstd::FileExists(dir_path)) {
+    LOG(INFO) << "Dump file is not exist,path: " << dir_path;
+    return 0;
+  }
+  if (pstd::GetChildren(dir_path, dump_dir) != 0) {
+    return 0;
+  }
+  std::string dump_file = dir_path + dump_dir[0];
+  struct stat fileStat;
+  if (stat(dump_file.c_str(), &fileStat) == 0) {
+    return static_cast<int64_t>(fileStat.st_mtime);
+  }
+  return 0;
 }
 
 void DoBgslotscleanup(void* arg) {

@@ -276,6 +276,7 @@ class ZRemCmd : public Cmd {
   std::string key_;
   std::vector<std::string> members_;
   int32_t deleted_ = 0;
+  rocksdb::Status s_;
   void DoInitial() override;
 };
 
@@ -476,6 +477,7 @@ class ZRevrangebylexCmd : public ZsetRangebylexParentCmd {
 
  private:
   void DoInitial() override;
+  rocksdb::Status s_;
 };
 
 class ZLexcountCmd : public Cmd {

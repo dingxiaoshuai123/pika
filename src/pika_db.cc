@@ -309,6 +309,7 @@ BgSaveInfo DB::bgsave_info() {
 void DB::FinishBgsave() {
   std::lock_guard l(bgsave_protector_);
   bgsave_info_.bgsaving = false;
+  g_pika_server->UpdateLastSave(time(nullptr));
 }
 
 // Prepare engine, need bgsave_protector protect
