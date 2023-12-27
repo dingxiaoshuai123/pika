@@ -218,6 +218,8 @@ func test_del_replication(ctx *context.Context, clientMaster, clientSlave *redis
 	for i := int64(0); i < clientMaster.LLen(*ctx, "blist3").Val(); i++ {
 		Expect(clientMaster.LIndex(*ctx, "blist3", i)).To(Equal(clientSlave.LIndex(*ctx, "blist3", i)))
 	}
+	clientMaster.Del(*ctx, "blist100", "blist101", "blist102", "blist103")
+	clientMaster.Del(*ctx, "blist0", "blist1", "blist2", "blist3")
 
 }
 
@@ -361,7 +363,7 @@ func issuePushPopFrequency(ctx *context.Context, clientMaster *redis.Client, wg 
 	clientMaster.BLPop(*ctx, 1*time.Second, "blist0")
 }
 
-var _ = PDescribe("shuould replication ", func() {
+var _ = Describe("should replication ", func() {
 	Describe("all replication test", func() {
 		ctx := context.TODO()
 		var clientSlave *redis.Client
@@ -371,14 +373,14 @@ var _ = PDescribe("shuould replication ", func() {
 			clientMaster = redis.NewClient(pikaOptions1())
 			clientSlave = redis.NewClient(pikaOptions2())
 			cleanEnv(ctx, clientMaster, clientSlave)
-			Expect(clientSlave.FlushDB(ctx).Err()).NotTo(HaveOccurred())
-			Expect(clientMaster.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+			//Expect(clientSlave.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+			//Expect(clientMaster.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 			time.Sleep(1 * time.Second)
 		})
 		AfterEach(func() {
 			cleanEnv(ctx, clientMaster, clientSlave)
-			Expect(clientSlave.FlushDB(ctx).Err()).NotTo(HaveOccurred())
-			Expect(clientMaster.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+			//Expect(clientSlave.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+			//Expect(clientMaster.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 			time.Sleep(1 * time.Second)
 			Expect(clientSlave.Close()).NotTo(HaveOccurred())
 			Expect(clientMaster.Close()).NotTo(HaveOccurred())
@@ -417,11 +419,12 @@ var _ = PDescribe("shuould replication ", func() {
 			slaveWrite := clientSlave.Set(ctx, "foo", "bar", 0)
 			Expect(slaveWrite.Err()).To(MatchError("ERR Server in read-only"))
 
-			clientMaster.Del(ctx, "blist0", "blist1", "blist")
+			Expect(clientMaster.Del(ctx, "blist0", "blist1", "blist").Err()).NotTo(HaveOccurred())
 			execute(&ctx, clientMaster, 4, rpoplpushThread)
 			for i := int64(0); i < clientMaster.LLen(ctx, "blist").Val(); i++ {
 				Expect(clientMaster.LIndex(ctx, "blist", i)).To(Equal(clientSlave.LIndex(ctx, "blist", i)))
 			}
+			Expect(clientMaster.Del(ctx, "blist0", "blist1", "blist").Err()).NotTo(HaveOccurred())
 
 			Expect(clientMaster.Del(ctx, "bitkey1", "bitkey2", "bitkey_out1", "bitkey_out2").Err()).NotTo(HaveOccurred())
 			execute(&ctx, clientMaster, 4, randomBitopThread)
@@ -432,8 +435,9 @@ var _ = PDescribe("shuould replication ", func() {
 			master_key_out_count2 := clientMaster.Do(ctx, "bitcount", "bitkey_out2", 0, -1)
 			slave_key_out_count2 := clientSlave.Do(ctx, "bitcount", "bitkey_out2", 0, -1)
 			Expect(master_key_out_count2.Val()).To(Equal(slave_key_out_count2.Val()))
+			Expect(clientMaster.Del(ctx, "bitkey1", "bitkey2", "bitkey_out1", "bitkey_out2").Err()).NotTo(HaveOccurred())
 
-			clientMaster.Del(ctx, "source_set", "dest_set")
+			Expect(clientMaster.Del(ctx, "sourceSet", "destSet").Err()).NotTo(HaveOccurred())
 			execute(&ctx, clientMaster, 4, randomSmoveThread)
 			master_source_set := clientMaster.SMembers(ctx, "sourceSet")
 			Expect(master_source_set.Err()).NotTo(HaveOccurred())
@@ -446,6 +450,7 @@ var _ = PDescribe("shuould replication ", func() {
 			slave_dest_set := clientSlave.SMembers(ctx, "destSet")
 			Expect(slave_dest_set.Err()).NotTo(HaveOccurred())
 			Expect(master_dest_set.Val()).To(Equal(slave_dest_set.Val()))
+			Expect(clientMaster.Del(ctx, "sourceSet", "destSet").Err()).NotTo(HaveOccurred())
 
 			test_del_replication(&ctx, clientMaster, clientSlave)
 
@@ -476,6 +481,7 @@ var _ = PDescribe("shuould replication ", func() {
 			slave_dest_interstore_set := clientSlave.SMembers(ctx, "dest_set")
 			Expect(slave_dest_interstore_set.Err()).NotTo(HaveOccurred())
 			Expect(master_dest_interstore_set.Val()).To(Equal(slave_dest_interstore_set.Val()))
+			clientMaster.Del(ctx, "set1", "set2", "dest_set")
 
 			//clientMaster.FlushAll(ctx)
 			//time.Sleep(3 * time.Second)
@@ -513,6 +519,7 @@ var _ = PDescribe("shuould replication ", func() {
 			slave_unionstore_set := clientSlave.SMembers(ctx, "set_out")
 			Expect(slave_unionstore_set.Err()).NotTo(HaveOccurred())
 			Expect(master_unionstore_set.Val()).To(Equal(slave_unionstore_set.Val()))
+			clientMaster.Del(ctx, "set1", "set2", "set_out")
 
 			// Stream replication test
 			clientMaster.Del(ctx, "mystream")
@@ -522,6 +529,7 @@ var _ = PDescribe("shuould replication ", func() {
 			Expect(masterStreamMessages.Err()).NotTo(HaveOccurred())
 			Expect(slaveStreamMessages.Err()).NotTo(HaveOccurred())
 			Expect(masterStreamMessages.Val()).To(Equal(slaveStreamMessages.Val()))
+			clientMaster.Del(ctx, "mystream")
 
 			// Blocked master-slave replication test
 			lists := []string{"list0", "list1"}
@@ -563,6 +571,7 @@ var _ = PDescribe("shuould replication ", func() {
 					Expect(clientMaster.LIndex(ctx, "list1", i)).To(Equal(clientSlave.LIndex(ctx, "list1", i)))
 				}
 			}
+			err = clientMaster.Del(ctx, lists...)
 
 			// High frequency pop/push during unblocking process
 			lists = []string{"blist0", "blist1"}
@@ -582,6 +591,7 @@ var _ = PDescribe("shuould replication ", func() {
 			for i := int64(0); i < clientMaster.LLen(ctx, "blist0").Val(); i++ {
 				Expect(clientMaster.LIndex(ctx, "blist0", i)).To(Equal(clientSlave.LIndex(ctx, "blist0", i)))
 			}
+			err = clientMaster.Del(ctx, lists...)
 		})
 
 	})
